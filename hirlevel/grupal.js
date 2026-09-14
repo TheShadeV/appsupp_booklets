@@ -1,6 +1,10 @@
-(() => {
+(async () => {
   const APP_ID = "docx-grupal-converter-panel";
 
+  const JSZIP_URL =
+    "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";
+
+  // Ha már nyitva van a panel, ne hozzunk létre még egyet.
   if (document.getElementById(APP_ID)) {
     document.getElementById(APP_ID).scrollIntoView({
       behavior: "smooth",
@@ -8,6 +12,54 @@
     });
 
     return;
+  }
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const existing = [...document.scripts].find(
+        (script) => script.src === src,
+      );
+
+      if (existing) {
+        if (window.JSZip) {
+          resolve();
+          return;
+        }
+
+        existing.addEventListener("load", resolve, { once: true });
+
+        existing.addEventListener("error", reject, { once: true });
+
+        return;
+      }
+
+      const script = document.createElement("script");
+
+      script.src = src;
+      script.async = true;
+
+      script.onload = resolve;
+
+      script.onerror = () => {
+        reject(new Error(`Nem sikerült betölteni: ${src}`));
+      };
+
+      document.head.appendChild(script);
+    });
+  }
+
+  async function ensureJSZip() {
+    if (window.JSZip) {
+      return window.JSZip;
+    }
+
+    await loadScript(JSZIP_URL);
+
+    if (!window.JSZip) {
+      throw new Error("A JSZip betöltődött, de nem érhető el.");
+    }
+
+    return window.JSZip;
   }
 
   function escapeHtml(value = "") {
@@ -66,6 +118,7 @@
     }
 
     const xmlText = await file.async("text");
+
     const xml = parseXml(xmlText);
 
     const relationships = new Map();
@@ -76,7 +129,9 @@
       }
 
       const id = relationship.getAttribute("Id");
+
       const target = relationship.getAttribute("Target");
+
       const targetMode = relationship.getAttribute("TargetMode");
 
       if (id && target && targetMode === "External") {
@@ -97,6 +152,7 @@
     }
 
     const xmlText = await file.async("text");
+
     const xml = parseXml(xmlText);
 
     for (const style of xml.getElementsByTagName("*")) {
@@ -145,6 +201,7 @@
       /heading\s*4/,
       /heading\s*5/,
       /heading\s*6/,
+
       /címsor\s*1/,
       /címsor\s*2/,
       /címsor\s*3/,
@@ -232,6 +289,7 @@
 
       if (name === "r") {
         html += runToHtml(child);
+
         continue;
       }
 
@@ -248,7 +306,7 @@
         const content = inlineChildrenToHtml(child, relationships);
 
         if (href) {
-          html += `<a href="${escapeAttribute(href)}">` + `${content}</a>`;
+          html += `<a href="${escapeAttribute(href)}">` + content + "</a>";
         } else {
           html += content;
         }
@@ -276,7 +334,7 @@
     const headingLevel = detectHeadingLevel(styleId, styleName);
 
     if (headingLevel) {
-      return `<h${headingLevel}>` + `${content}` + `</h${headingLevel}>`;
+      return `<h${headingLevel}>` + content + `</h${headingLevel}>`;
     }
 
     return `<p>${content}</p>`;
@@ -323,11 +381,9 @@ ${rows.join("\n")}
   }
 
   async function convertDocxToHtml(file) {
-    if (!window.JSZip) {
-      throw new Error("JSZip nem érhető el. A helperrel előbb töltsd be.");
-    }
+    const JSZip = await ensureJSZip();
 
-    const zip = await window.JSZip.loadAsync(file);
+    const zip = await JSZip.loadAsync(file);
 
     const documentFile = zip.file("word/document.xml");
 
@@ -337,7 +393,9 @@ ${rows.join("\n")}
 
     const [documentXmlText, styles, relationships] = await Promise.all([
       documentFile.async("text"),
+
       readStyles(zip),
+
       readRelationships(zip),
     ]);
 
@@ -379,21 +437,37 @@ ${rows.join("\n")}
 
     Object.assign(panel.style, {
       position: "fixed",
+
       top: "20px",
+
       right: "20px",
+
       width: "560px",
+
       maxWidth: "calc(100vw - 40px)",
+
       maxHeight: "calc(100vh - 40px)",
+
       zIndex: "2147483647",
+
       background: "#ffffff",
+
       color: "#222222",
+
       border: "1px solid #bbbbbb",
+
       borderRadius: "10px",
-      boxShadow: "0 12px 40px rgba(0,0,0,.25)",
+
+      boxShadow: "0 12px 40px rgba(0, 0, 0, .25)",
+
       padding: "16px",
+
       fontFamily: "Arial, sans-serif",
+
       fontSize: "14px",
+
       boxSizing: "border-box",
+
       overflow: "auto",
     });
 
@@ -408,7 +482,9 @@ ${rows.join("\n")}
                 "
             >
                 <strong
-                    style="font-size:16px;"
+                    style="
+                        font-size:16px;
+                    "
                 >
                     DOCX → Grupal HTML
                 </strong>
@@ -473,7 +549,9 @@ ${rows.join("\n")}
                 "
             >
                 <label
-                    style="font-weight:600;"
+                    style="
+                        font-weight:600;
+                    "
                 >
                     HTML forrás
                 </label>
@@ -519,9 +597,10 @@ ${rows.join("\n")}
                     line-height:1.4;
                 "
             >
-                Kezeli a bekezdéseket, címsorokat,
-                félkövér/dőlt/aláhúzott szöveget,
-                külső linkeket és egyszerű táblázatokat.
+                Első verzió:
+                bekezdések, címsorok,
+                félkövér, dőlt és aláhúzott szöveg,
+                külső linkek és egyszerű táblázatok.
             </div>
         `;
 
@@ -599,5 +678,13 @@ ${rows.join("\n")}
     });
   }
 
-  createPanel();
+  try {
+    createPanel();
+  } catch (error) {
+    console.error("[DOCX → Grupal]", error);
+
+    alert(
+      "A Grupal converter nem tudott elindulni:\n\n" + (error.message || error),
+    );
+  }
 })();
