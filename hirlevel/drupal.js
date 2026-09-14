@@ -223,14 +223,151 @@
     return `${number / 50}%`;
   }
 
-  function emuToPx(value) {
-    const number = Number(value);
-
-    if (!Number.isFinite(number)) {
-      return null;
+  function ptValueToTwips(value) {
+    if (!value) {
+      return 0;
     }
 
-    return number / 9525;
+    const match = String(value)
+      .trim()
+      .match(/^(-?[\d.]+)pt$/i);
+
+    if (!match) {
+      return 0;
+    }
+
+    const points = Number(match[1]);
+
+    if (!Number.isFinite(points)) {
+      return 0;
+    }
+
+    return points * 20;
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  // =========================================================
+  // WORD PAGE / TEXT BODY DIMENSIONS
+  // =========================================================
+
+  function readPageMetrics(documentXml) {
+    const body = descendants(documentXml, "body")[0];
+
+    /*
+     * A body közvetlen sectPr-je az alap /
+     * utolsó section page setupja.
+     */
+    let sectPr = body ? firstDirectChild(body, "sectPr") : null;
+
+    if (!sectPr && body) {
+      const sections = descendants(body, "sectPr");
+
+      sectPr = sections[sections.length - 1] || null;
+    }
+
+    /*
+     * Word fallback:
+     * Letter méret + 1" margó.
+     *
+     * Normál DOCX-nél ezek ténylegesen benne
+     * lesznek a sectPr-ben.
+     */
+    let pageWidthTwips = 12240;
+
+    let pageHeightTwips = 15840;
+
+    let marginLeftTwips = 1440;
+
+    let marginRightTwips = 1440;
+
+    let marginTopTwips = 1440;
+
+    let marginBottomTwips = 1440;
+
+    if (sectPr) {
+      const pgSz = firstDirectChild(sectPr, "pgSz");
+
+      const pgMar = firstDirectChild(sectPr, "pgMar");
+
+      if (pgSz) {
+        const width = Number(getWordAttribute(pgSz, "w"));
+
+        const height = Number(getWordAttribute(pgSz, "h"));
+
+        if (Number.isFinite(width) && width > 0) {
+          pageWidthTwips = width;
+        }
+
+        if (Number.isFinite(height) && height > 0) {
+          pageHeightTwips = height;
+        }
+      }
+
+      if (pgMar) {
+        const left = Number(getWordAttribute(pgMar, "left"));
+
+        const right = Number(getWordAttribute(pgMar, "right"));
+
+        const top = Number(getWordAttribute(pgMar, "top"));
+
+        const bottom = Number(getWordAttribute(pgMar, "bottom"));
+
+        if (Number.isFinite(left)) {
+          marginLeftTwips = left;
+        }
+
+        if (Number.isFinite(right)) {
+          marginRightTwips = right;
+        }
+
+        if (Number.isFinite(top)) {
+          marginTopTwips = top;
+        }
+
+        if (Number.isFinite(bottom)) {
+          marginBottomTwips = bottom;
+        }
+      }
+    }
+
+    const textWidthTwips = Math.max(
+      1,
+      pageWidthTwips - marginLeftTwips - marginRightTwips,
+    );
+
+    return {
+      pageWidthTwips,
+      pageHeightTwips,
+
+      marginLeftTwips,
+      marginRightTwips,
+      marginTopTwips,
+      marginBottomTwips,
+
+      textWidthTwips,
+    };
+  }
+
+  function getEffectiveTextWidthTwips(context) {
+    let width = context.pageMetrics?.textWidthTwips || 9360;
+
+    const paragraph = context.currentParagraphProperties || {};
+
+    const left = ptValueToTwips(paragraph.marginLeft);
+
+    const right = ptValueToTwips(paragraph.marginRight);
+
+    /*
+     * Ha a bekezdés be van húzva, a kép
+     * a tényleges rendelkezésre álló
+     * bekezdésszélességhez igazodjon.
+     */
+    width -= Math.max(0, left) + Math.max(0, right);
+
+    return Math.max(width, 1);
   }
 
   // =========================================================
@@ -522,9 +659,12 @@
       const map = {
         left: "left",
         start: "left",
+
         center: "center",
+
         right: "right",
         end: "right",
+
         both: "justify",
         distribute: "justify",
         thaiDistribute: "justify",
@@ -961,7 +1101,7 @@
     const text = listInfo?.lvlText || "";
 
     if (format === "bullet") {
-      if (text.includes("○") || text.includes("o")) {
+      if (text.includes("○") || text.includes("◦")) {
         return {
           tag: "ul",
 
@@ -1010,19 +1150,11 @@
 
     const styles = {
       margin: "0",
-
       "padding-top": "0",
-
       "padding-bottom": "0",
-
+      "padding-left": "1.4em",
       "list-style-type": listStyle.type,
     };
-
-    /*
-     * A Word indent nagy része a LI-re kerül,
-     * ezért itt csak egy minimális marker-helyet adunk.
-     */
-    styles["padding-left"] = "1.4em";
 
     const startAttribute =
       listStyle.tag === "ol" && listInfo?.start && listInfo.start !== 1
@@ -1044,7 +1176,6 @@
     }
 
     let html = "";
-
     let previousLevel = -1;
 
     const stack = [];
@@ -1052,11 +1183,6 @@
     for (let index = 0; index < items.length; index++) {
       const item = items[index];
 
-      /*
-       * Word dokumentumoknál normálisan
-       * legfeljebb egy szintet ugrik.
-       * Ha ennél többet ugrana, fokozatosan nyitunk.
-       */
       let level = Math.max(0, Number(item.listLevel || 0));
 
       if (previousLevel < 0) {
@@ -1074,10 +1200,6 @@
       }
 
       if (level > previousLevel) {
-        /*
-         * Az új nested lista az előző <li>-ben marad.
-         */
-
         while (previousLevel < level) {
           html += openListTag(item.listInfo);
 
@@ -1103,9 +1225,6 @@
         continue;
       }
 
-      /*
-       * Visszalépés nested listából.
-       */
       html += "</li>";
 
       while (previousLevel > level) {
@@ -1180,8 +1299,10 @@
 
   function getDrupalCsrfToken() {
     /*
-     * Yii esetén gyakran ez a legjobb.
+     * Mindig az AKTUÁLIS tokent olvassuk ki.
+     * Semmilyen CSRF token nincs beégetve.
      */
+
     if (window.yii && typeof window.yii.getCsrfToken === "function") {
       const token = window.yii.getCsrfToken();
 
@@ -1202,10 +1323,15 @@
       return meta.content;
     }
 
-    throw new Error("Nem található a Drupal/Yii _csrf token.");
+    throw new Error("Nem található az aktuális _csrf token.");
   }
 
   function getCkeditorCsrfToken() {
+    /*
+     * Ezt is minden upload hívásnál
+     * az aktuális CKEditor példányból kérjük.
+     */
+
     if (
       window.CKEDITOR &&
       window.CKEDITOR.tools &&
@@ -1224,7 +1350,7 @@
       return input.value;
     }
 
-    throw new Error("Nem sikerült lekérni a CKEditor CSRF tokent.");
+    throw new Error("Nem sikerült lekérni az aktuális CKEditor CSRF tokent.");
   }
 
   function getCkeditorInstanceName() {
@@ -1258,10 +1384,6 @@
       }
     }
 
-    /*
-     * Megpróbáljuk a DOM-ból is kikeresni,
-     * ha a CKEditor config nem publikus.
-     */
     for (const element of document.querySelectorAll("[src],[href],[action]")) {
       const value =
         element.getAttribute("src") ||
@@ -1274,7 +1396,7 @@
     }
 
     /*
-     * Fallback a tőled kapott aktuális endpoint.
+     * Végső fallback a jelenlegi rendszerhez.
      */
     return new URL("/assets/27d12b5/upload.php", location.origin).href;
   }
@@ -1335,12 +1457,12 @@
     }
 
     /*
-     * CKEditor 4 klasszikus válasz:
+     * CKEditor 4:
      *
      * window.parent.CKEDITOR.tools.callFunction(
      *     1,
-     *     '/path/image.jpg',
-     *     ''
+     *     "/image.jpg",
+     *     ""
      * );
      */
 
@@ -1362,13 +1484,23 @@
   }
 
   async function uploadImageToDrupal(blob, filename) {
+    /*
+     * FONTOS:
+     * itt, közvetlenül upload előtt
+     * kérjük le az aktuális tokeneket.
+     */
+
+    const csrfToken = getDrupalCsrfToken();
+
+    const ckCsrfToken = getCkeditorCsrfToken();
+
     const formData = new FormData();
 
     formData.append("upload", blob, filename);
 
-    formData.append("_csrf", getDrupalCsrfToken());
+    formData.append("_csrf", csrfToken);
 
-    formData.append("ckCsrfToken", getCkeditorCsrfToken());
+    formData.append("ckCsrfToken", ckCsrfToken);
 
     const response = await fetch(buildUploadUrl(), {
       method: "POST",
@@ -1428,9 +1560,6 @@
   ) {
     const relationIds = new Set();
 
-    /*
-     * Modern DOCX DrawingML.
-     */
     for (const blip of descendants(documentXml, "blip")) {
       const id = getWordAttribute(blip, "embed");
 
@@ -1439,9 +1568,6 @@
       }
     }
 
-    /*
-     * Régebbi VML képek.
-     */
     for (const imageData of descendants(documentXml, "imagedata")) {
       const id = getWordAttribute(imageData, "id");
 
@@ -1467,9 +1593,6 @@
         continue;
       }
 
-      /*
-       * Külső kép URL.
-       */
       if (relationship.targetMode === "External") {
         uploaded.set(relationId, relationship.target);
 
@@ -1511,7 +1634,7 @@
   }
 
   // =========================================================
-  // IMAGE RENDERING
+  // RESPONSIVE IMAGE RENDERING
   // =========================================================
 
   function getDrawingRelationId(drawing) {
@@ -1534,54 +1657,124 @@
     return null;
   }
 
-  function getDrawingSize(drawing) {
+  function getDrawingDimensions(drawing) {
     /*
-     * DrawingML:
-     * <wp:extent cx="..." cy="...">
+     * Modern DrawingML.
+     *
+     * cx / cy EMU.
+     *
+     * 1 twip = 635 EMU
      */
     const extent = firstDescendant(drawing, "extent");
 
     if (extent) {
-      const cx = extent.getAttribute("cx");
+      const cx = Number(extent.getAttribute("cx"));
 
-      const cy = extent.getAttribute("cy");
+      const cy = Number(extent.getAttribute("cy"));
 
-      const width = emuToPx(cx);
-
-      const height = emuToPx(cy);
-
-      if (width && height) {
+      if (Number.isFinite(cx) && cx > 0) {
         return {
-          width,
-          height,
+          widthEmu: cx,
+
+          heightEmu: Number.isFinite(cy) ? cy : null,
+
+          widthPt: null,
+
+          heightPt: null,
         };
       }
     }
 
     /*
-     * Régi VML:
-     * style="width:123pt;height:55pt"
+     * Régi VML.
+     *
+     * style="width:123pt;height:50pt"
      */
     const shape = firstDescendant(drawing, "shape");
 
     if (shape) {
       const style = shape.getAttribute("style") || "";
 
-      const width = style.match(/width\s*:\s*([\d.]+)(pt|px)/i);
+      const widthMatch = style.match(/(?:^|;)\s*width\s*:\s*([\d.]+)pt/i);
 
-      const height = style.match(/height\s*:\s*([\d.]+)(pt|px)/i);
+      const heightMatch = style.match(/(?:^|;)\s*height\s*:\s*([\d.]+)pt/i);
+
+      const widthPt = widthMatch ? Number(widthMatch[1]) : null;
+
+      const heightPt = heightMatch ? Number(heightMatch[1]) : null;
 
       return {
-        width: width ? `${width[1]}${width[2]}` : null,
+        widthEmu: null,
 
-        height: height ? `${height[1]}${height[2]}` : null,
+        heightEmu: null,
+
+        widthPt: Number.isFinite(widthPt) ? widthPt : null,
+
+        heightPt: Number.isFinite(heightPt) ? heightPt : null,
       };
     }
 
     return {
-      width: null,
+      widthEmu: null,
 
-      height: null,
+      heightEmu: null,
+
+      widthPt: null,
+
+      heightPt: null,
+    };
+  }
+
+  function calculateResponsiveImageWidth(drawing, context) {
+    const dimensions = getDrawingDimensions(drawing);
+
+    const availableWidthTwips = getEffectiveTextWidthTwips(context);
+
+    let imageWidthTwips = null;
+
+    if (dimensions.widthEmu) {
+      /*
+       * 1 twip = 635 EMU
+       */
+      imageWidthTwips = dimensions.widthEmu / 635;
+    }
+
+    if (!imageWidthTwips && dimensions.widthPt) {
+      imageWidthTwips = dimensions.widthPt * 20;
+    }
+
+    if (!imageWidthTwips || !availableWidthTwips) {
+      return {
+        percent: 100,
+
+        dimensions,
+      };
+    }
+
+    let percent = (imageWidthTwips / availableWidthTwips) * 100;
+
+    /*
+     * Ha Wordben gyakorlatilag teljes
+     * szövegszélességű a kép, legyen
+     * valóban 100%.
+     *
+     * Így néhány twip eltérés miatt nem
+     * 99.16%-ot kapunk.
+     */
+    if (percent >= 97) {
+      percent = 100;
+    }
+
+    percent = clamp(percent, 1, 100);
+
+    /*
+     * 2 tizedes bőven elegendő.
+     */
+    percent = Math.round(percent * 100) / 100;
+
+    return {
+      percent,
+      dimensions,
     };
   }
 
@@ -1613,30 +1806,49 @@
       return "";
     }
 
-    const size = getDrawingSize(drawing);
+    const { percent } = calculateResponsiveImageWidth(drawing, context);
 
     const alt = getDrawingAltText(drawing);
+
+    /*
+     * A Word relatív méretét százalékosan
+     * visszük át.
+     *
+     * Példák:
+     *
+     * Word teljes szélesség -> 100%
+     * Word fél szélesség    -> ~50%
+     * Word 1/3 szélesség    -> ~33%
+     *
+     * Így ha a Drupal HTML-t egy 600px-es
+     * newsletter parentbe másolod, automatikusan
+     * annak a méretéhez fog igazodni.
+     */
 
     const styles = {
       display: "inline-block",
 
+      width: `${percent}%`,
+
+      "max-width": "100%",
+
+      height: "auto",
+
       border: "0",
+
+      margin: "0",
+
+      padding: "0",
+
+      "vertical-align": "middle",
     };
 
-    if (size.width) {
-      styles.width =
-        typeof size.width === "number" ? `${size.width}px` : size.width;
-    }
-
-    if (size.height) {
-      styles.height =
-        typeof size.height === "number" ? `${size.height}px` : size.height;
-    }
-
     return (
-      `<img src="${escapeAttribute(url)}"` +
+      `<img` +
+      ` src="${escapeAttribute(url)}"` +
       ` alt="${escapeAttribute(alt)}"` +
-      ` style="${escapeAttribute(cssString(styles))}">`
+      ` style="${escapeAttribute(cssString(styles))}"` +
+      `>`
     );
   }
 
@@ -1818,9 +2030,6 @@
 
     const directParagraph = parseParagraphProperties(directPPr);
 
-    /*
-     * Először kiderítjük, hogy lista-e.
-     */
     const preliminary = mergeObjects(
       baseContext.styleSystem.defaults.paragraph,
 
@@ -1839,10 +2048,6 @@
         )
       : null;
 
-    /*
-     * A numbering level saját paragraph
-     * property-jeit is ráolvassuk.
-     */
     const paragraphProperties = mergeObjects(
       baseContext.styleSystem.defaults.paragraph,
 
@@ -1859,9 +2064,22 @@
       paragraphStyle.run,
     );
 
+    /*
+     * A paragraph property-ket átadjuk a
+     * kép renderernek is.
+     *
+     * Így ha a Word bekezdés például be van
+     * húzva 2 cm-rel, a kép százalékos mérete
+     * nem a teljes oldalhoz, hanem a tényleges
+     * rendelkezésre álló törzsszélességhez
+     * számolódik.
+     */
     const context = {
       ...baseContext,
+
       paragraphStyle,
+
+      currentParagraphProperties: paragraphProperties,
     };
 
     const content = inlineChildrenToHtml(paragraph, context);
@@ -1895,11 +2113,6 @@
       (isEmpty ? "<br>" : content) +
       "</p>";
 
-    /*
-     * Lista LI esetén a böngésző marker kezeli
-     * a hanging indentet, ezért a negatív
-     * text-indentet nem duplázzuk.
-     */
     const listCss = {
       ...paragraphCss,
     };
@@ -1907,11 +2120,6 @@
     if (listInfo) {
       delete listCss["text-indent"];
 
-      /*
-       * A lista wrapper már ad egy marker-helyet.
-       * A Word margin-left azért megmarad, mert
-       * az tartalmazhat fontos szintkülönbséget.
-       */
       listCss["list-style-position"] = "outside";
     }
 
@@ -1974,7 +2182,6 @@
 
     const styles = {
       padding: "0",
-
       "vertical-align": "top",
     };
 
@@ -1999,7 +2206,9 @@
 
       const map = {
         top: "top",
+
         center: "middle",
+
         bottom: "bottom",
       };
 
@@ -2393,6 +2602,14 @@
       const spans = [...root.querySelectorAll("span")];
 
       for (const span of spans) {
+        /*
+         * A tabot adó üres span nem
+         * redundant, mert layoutot tart.
+         */
+        if (span.hasAttribute("style")) {
+          continue;
+        }
+
         if (span.attributes.length !== 0) {
           continue;
         }
@@ -2493,6 +2710,15 @@
 
     const documentXml = parseXml(documentXmlText);
 
+    /*
+     * Itt számoljuk ki a Word valódi
+     * szövegtörzs-szélességét.
+     *
+     * Ez lesz a százalékos képméretezés
+     * referenciaértéke.
+     */
+    const pageMetrics = readPageMetrics(documentXml);
+
     progress?.("Word stílusok feldolgozása...");
 
     const themeFonts = await readThemeFonts(zip);
@@ -2524,11 +2750,20 @@
 
     const context = {
       zip,
+
       themeFonts,
+
       styleSystem,
+
       numberingSystem,
+
       relationships,
+
       imageUrls,
+
+      pageMetrics,
+
+      currentParagraphProperties: {},
 
       paragraphStyle: {
         paragraph: {},
@@ -2605,7 +2840,9 @@
                 "
             >
                 <strong
-                    style="font-size:17px;"
+                    style="
+                        font-size:17px;
+                    "
                 >
                     DOCX → Drupal HTML
                 </strong>
@@ -2761,9 +2998,13 @@
       output.value = "";
 
       try {
-        const html = await convertDocxToHtml(file, (message) => {
-          status.textContent = message;
-        });
+        const html = await convertDocxToHtml(
+          file,
+
+          (message) => {
+            status.textContent = message;
+          },
+        );
 
         output.value = html;
 
