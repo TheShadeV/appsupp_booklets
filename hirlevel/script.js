@@ -156,7 +156,7 @@
         h = {
             getToken() {
                 const e = `; ${document.cookie}`.split("; __RequestVerificationToken=").pop().split(";").shift();
-                return e && e !== `; ${document.cookie}` ? e : document.querySelector('input[name="__RequestVerificationToken"]') ? .value
+                return e && e !== `; ${document.cookie}` ? e : document.querySelector('input[name="__RequestVerificationToken"]') ?.value
             },
             async fetchDetails(e, t) {
                 const n = await fetch(`https://${a}/ServiceRequest/Dashboard/${e}`, {
@@ -164,7 +164,7 @@
                     }),
                     o = await n.text(),
                     i = (new DOMParser).parseFromString(o, "text/html"),
-                    s = (e, t = i) => t.querySelector(e) ? .textContent ? .trim() || "N/A",
+                    s = (e, t = i) => t.querySelector(e) ?.textContent ?.trim() || "N/A",
                     r = s("#divServicerequestDetal > div > div.card-body > div:nth-child(9) > div");
                 let d = "N/A";
                 d = r.toLowerCase().includes("nem hivatalos") ? "Nem hivatalos" : r.toLowerCase().includes("hivatalos") ? "Hivatalos" : r.split(" ")[0];
