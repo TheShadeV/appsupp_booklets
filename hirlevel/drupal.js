@@ -31,7 +31,6 @@
 
       script.src = src;
       script.async = true;
-
       script.onload = resolve;
 
       script.onerror = () => {
@@ -76,9 +75,9 @@
   function parseXml(xmlText) {
     const doc = new DOMParser().parseFromString(xmlText, "application/xml");
 
-    const parserError = doc.querySelector("parsererror");
+    const error = doc.querySelector("parsererror");
 
-    if (parserError) {
+    if (error) {
       throw new Error("A DOCX egyik XML fájlja nem olvasható.");
     }
 
@@ -224,6 +223,16 @@
     return `${number / 50}%`;
   }
 
+  function emuToPx(value) {
+    const number = Number(value);
+
+    if (!Number.isFinite(number)) {
+      return null;
+    }
+
+    return number / 9525;
+  }
+
   // =========================================================
   // COLORS
   // =========================================================
@@ -254,11 +263,33 @@
   }
 
   // =========================================================
+  // MIME
+  // =========================================================
+
+  function getMimeType(filename) {
+    const extension = filename.split(".").pop()?.toLowerCase();
+
+    const map = {
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      png: "image/png",
+      gif: "image/gif",
+      webp: "image/webp",
+      bmp: "image/bmp",
+      svg: "image/svg+xml",
+      tif: "image/tiff",
+      tiff: "image/tiff",
+    };
+
+    return map[extension] || "application/octet-stream";
+  }
+
+  // =========================================================
   // THEME
   // =========================================================
 
   async function readThemeFonts(zip) {
-    const defaults = {
+    const result = {
       major: null,
       minor: null,
     };
@@ -266,7 +297,7 @@
     const file = zip.file("word/theme/theme1.xml");
 
     if (!file) {
-      return defaults;
+      return result;
     }
 
     try {
@@ -280,14 +311,14 @@
 
       const minorLatin = minorFont ? descendants(minorFont, "latin")[0] : null;
 
-      defaults.major = majorLatin?.getAttribute("typeface") || null;
+      result.major = majorLatin?.getAttribute("typeface") || null;
 
-      defaults.minor = minorLatin?.getAttribute("typeface") || null;
+      result.minor = minorLatin?.getAttribute("typeface") || null;
     } catch {
       // Nem kritikus.
     }
 
-    return defaults;
+    return result;
   }
 
   // =========================================================
@@ -483,18 +514,17 @@
 
     const spacing = firstDirectChild(pPr, "spacing");
 
+    const numPr = firstDirectChild(pPr, "numPr");
+
     if (justification) {
       const value = getWordAttribute(justification, "val");
 
       const map = {
         left: "left",
         start: "left",
-
         center: "center",
-
         right: "right",
         end: "right",
-
         both: "justify",
         distribute: "justify",
         thaiDistribute: "justify",
@@ -597,6 +627,22 @@
       }
     }
 
+    if (numPr) {
+      const numIdElement = firstDirectChild(numPr, "numId");
+
+      const levelElement = firstDirectChild(numPr, "ilvl");
+
+      const numId = getWordAttribute(numIdElement, "val");
+
+      const level = getWordAttribute(levelElement, "val");
+
+      if (numId !== null && numId !== "0") {
+        result.numId = String(numId);
+
+        result.listLevel = Number(level || 0);
+      }
+    }
+
     return result;
   }
 
@@ -631,12 +677,6 @@
     if (properties.textIndent) {
       styles["text-indent"] = properties.textIndent;
     }
-
-    /*
-     * Paddingot használunk a Word
-     * bekezdéstérközhöz, hogy ne legyen
-     * CSS margin collapse.
-     */
 
     if (properties.spaceBefore) {
       styles["padding-top"] = properties.spaceBefore;
@@ -774,6 +814,327 @@
   }
 
   // =========================================================
+  // NUMBERING / LISTS
+  // =========================================================
+
+  async function readNumberingSystem(zip, themeFonts) {
+    const result = {
+      abstractNumbers: new Map(),
+
+      numbers: new Map(),
+    };
+
+    const file = zip.file("word/numbering.xml");
+
+    if (!file) {
+      return result;
+    }
+
+    const xml = parseXml(await file.async("text"));
+
+    for (const abstractNum of descendants(xml, "abstractNum")) {
+      const abstractNumId = getWordAttribute(abstractNum, "abstractNumId");
+
+      if (abstractNumId === null) {
+        continue;
+      }
+
+      const levels = new Map();
+
+      for (const level of directChildren(abstractNum, "lvl")) {
+        const ilvl = Number(getWordAttribute(level, "ilvl") || 0);
+
+        const start = Number(
+          getWordAttribute(firstDirectChild(level, "start"), "val") || 1,
+        );
+
+        const numFmt =
+          getWordAttribute(firstDirectChild(level, "numFmt"), "val") ||
+          "bullet";
+
+        const lvlText =
+          getWordAttribute(firstDirectChild(level, "lvlText"), "val") || "";
+
+        const pPr = firstDirectChild(level, "pPr");
+
+        const rPr = firstDirectChild(level, "rPr");
+
+        levels.set(ilvl, {
+          level: ilvl,
+
+          start,
+
+          numFmt,
+
+          lvlText,
+
+          paragraph: parseParagraphProperties(pPr),
+
+          run: parseRunProperties(rPr, themeFonts),
+        });
+      }
+
+      result.abstractNumbers.set(String(abstractNumId), {
+        id: String(abstractNumId),
+
+        levels,
+      });
+    }
+
+    for (const num of descendants(xml, "num")) {
+      const numId = getWordAttribute(num, "numId");
+
+      if (numId === null) {
+        continue;
+      }
+
+      const abstractNumId = getWordAttribute(
+        firstDirectChild(num, "abstractNumId"),
+        "val",
+      );
+
+      const overrides = new Map();
+
+      for (const override of directChildren(num, "lvlOverride")) {
+        const level = Number(getWordAttribute(override, "ilvl") || 0);
+
+        const startOverride = getWordAttribute(
+          firstDirectChild(override, "startOverride"),
+          "val",
+        );
+
+        if (startOverride !== null) {
+          overrides.set(level, {
+            start: Number(startOverride),
+          });
+        }
+      }
+
+      result.numbers.set(String(numId), {
+        id: String(numId),
+
+        abstractNumId: String(abstractNumId),
+
+        overrides,
+      });
+    }
+
+    return result;
+  }
+
+  function getNumberingLevel(numberingSystem, numId, level) {
+    if (!numId || !numberingSystem) {
+      return null;
+    }
+
+    const number = numberingSystem.numbers.get(String(numId));
+
+    if (!number) {
+      return null;
+    }
+
+    const abstract = numberingSystem.abstractNumbers.get(number.abstractNumId);
+
+    if (!abstract) {
+      return null;
+    }
+
+    const base =
+      abstract.levels.get(Number(level || 0)) || abstract.levels.get(0);
+
+    if (!base) {
+      return null;
+    }
+
+    const override = number.overrides.get(Number(level || 0));
+
+    return {
+      ...base,
+
+      start: override?.start ?? base.start,
+    };
+  }
+
+  function listStyleFromNumbering(listInfo) {
+    const format = listInfo?.numFmt || "bullet";
+
+    const text = listInfo?.lvlText || "";
+
+    if (format === "bullet") {
+      if (text.includes("○") || text.includes("o")) {
+        return {
+          tag: "ul",
+
+          type: "circle",
+        };
+      }
+
+      if (text.includes("■") || text.includes("▪") || text.includes("◼")) {
+        return {
+          tag: "ul",
+
+          type: "square",
+        };
+      }
+
+      return {
+        tag: "ul",
+
+        type: "disc",
+      };
+    }
+
+    const map = {
+      decimal: "decimal",
+
+      decimalZero: "decimal-leading-zero",
+
+      lowerLetter: "lower-alpha",
+
+      upperLetter: "upper-alpha",
+
+      lowerRoman: "lower-roman",
+
+      upperRoman: "upper-roman",
+    };
+
+    return {
+      tag: "ol",
+
+      type: map[format] || "decimal",
+    };
+  }
+
+  function openListTag(listInfo) {
+    const listStyle = listStyleFromNumbering(listInfo);
+
+    const styles = {
+      margin: "0",
+
+      "padding-top": "0",
+
+      "padding-bottom": "0",
+
+      "list-style-type": listStyle.type,
+    };
+
+    /*
+     * A Word indent nagy része a LI-re kerül,
+     * ezért itt csak egy minimális marker-helyet adunk.
+     */
+    styles["padding-left"] = "1.4em";
+
+    const startAttribute =
+      listStyle.tag === "ol" && listInfo?.start && listInfo.start !== 1
+        ? ` start="${listInfo.start}"`
+        : "";
+
+    return `<${listStyle.tag}${startAttribute} style="${escapeAttribute(cssString(styles))}">`;
+  }
+
+  function closeListTag(listInfo) {
+    const listStyle = listStyleFromNumbering(listInfo);
+
+    return `</${listStyle.tag}>`;
+  }
+
+  function renderListItems(items) {
+    if (!items.length) {
+      return "";
+    }
+
+    let html = "";
+
+    let previousLevel = -1;
+
+    const stack = [];
+
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index];
+
+      /*
+       * Word dokumentumoknál normálisan
+       * legfeljebb egy szintet ugrik.
+       * Ha ennél többet ugrana, fokozatosan nyitunk.
+       */
+      let level = Math.max(0, Number(item.listLevel || 0));
+
+      if (previousLevel < 0) {
+        html += openListTag(item.listInfo);
+
+        stack.push(item.listInfo);
+
+        html += `<li style="${escapeAttribute(cssString(item.listCss))}">`;
+
+        html += item.content || "<br>";
+
+        previousLevel = level;
+
+        continue;
+      }
+
+      if (level > previousLevel) {
+        /*
+         * Az új nested lista az előző <li>-ben marad.
+         */
+
+        while (previousLevel < level) {
+          html += openListTag(item.listInfo);
+
+          stack.push(item.listInfo);
+
+          previousLevel++;
+        }
+
+        html += `<li style="${escapeAttribute(cssString(item.listCss))}">`;
+
+        html += item.content || "<br>";
+
+        continue;
+      }
+
+      if (level === previousLevel) {
+        html += "</li>";
+
+        html += `<li style="${escapeAttribute(cssString(item.listCss))}">`;
+
+        html += item.content || "<br>";
+
+        continue;
+      }
+
+      /*
+       * Visszalépés nested listából.
+       */
+      html += "</li>";
+
+      while (previousLevel > level) {
+        const current = stack.pop();
+
+        html += closeListTag(current);
+
+        html += "</li>";
+
+        previousLevel--;
+      }
+
+      html += `<li style="${escapeAttribute(cssString(item.listCss))}">`;
+
+      html += item.content || "<br>";
+    }
+
+    html += "</li>";
+
+    while (stack.length) {
+      const current = stack.pop();
+
+      html += closeListTag(current);
+    }
+
+    return html;
+  }
+
+  // =========================================================
   // RELATIONSHIPS
   // =========================================================
 
@@ -814,6 +1175,472 @@
   }
 
   // =========================================================
+  // DRUPAL / CKEDITOR IMAGE UPLOAD
+  // =========================================================
+
+  function getDrupalCsrfToken() {
+    /*
+     * Yii esetén gyakran ez a legjobb.
+     */
+    if (window.yii && typeof window.yii.getCsrfToken === "function") {
+      const token = window.yii.getCsrfToken();
+
+      if (token) {
+        return token;
+      }
+    }
+
+    const input = document.querySelector('input[name="_csrf"]');
+
+    if (input?.value) {
+      return input.value;
+    }
+
+    const meta = document.querySelector('meta[name="csrf-token"]');
+
+    if (meta?.content) {
+      return meta.content;
+    }
+
+    throw new Error("Nem található a Drupal/Yii _csrf token.");
+  }
+
+  function getCkeditorCsrfToken() {
+    if (
+      window.CKEDITOR &&
+      window.CKEDITOR.tools &&
+      typeof window.CKEDITOR.tools.getCsrfToken === "function"
+    ) {
+      const token = window.CKEDITOR.tools.getCsrfToken();
+
+      if (token) {
+        return token;
+      }
+    }
+
+    const input = document.querySelector('input[name="ckCsrfToken"]');
+
+    if (input?.value) {
+      return input.value;
+    }
+
+    throw new Error("Nem sikerült lekérni a CKEditor CSRF tokent.");
+  }
+
+  function getCkeditorInstanceName() {
+    if (window.CKEDITOR?.instances?.["newsletters-message"]) {
+      return "newsletters-message";
+    }
+
+    const names = Object.keys(window.CKEDITOR?.instances || {});
+
+    return names[0] || "newsletters-message";
+  }
+
+  function findUploadUrl() {
+    const instanceName = getCkeditorInstanceName();
+
+    const instance = window.CKEDITOR?.instances?.[instanceName];
+
+    const candidates = [
+      instance?.config?.filebrowserImageUploadUrl,
+
+      instance?.config?.filebrowserUploadUrl,
+
+      window.CKEDITOR?.config?.filebrowserImageUploadUrl,
+
+      window.CKEDITOR?.config?.filebrowserUploadUrl,
+    ].filter(Boolean);
+
+    for (const candidate of candidates) {
+      if (String(candidate).includes("upload.php")) {
+        return new URL(candidate, location.origin).href;
+      }
+    }
+
+    /*
+     * Megpróbáljuk a DOM-ból is kikeresni,
+     * ha a CKEditor config nem publikus.
+     */
+    for (const element of document.querySelectorAll("[src],[href],[action]")) {
+      const value =
+        element.getAttribute("src") ||
+        element.getAttribute("href") ||
+        element.getAttribute("action");
+
+      if (value && value.includes("upload.php") && value.includes("ckeditor")) {
+        return new URL(value, location.origin).href;
+      }
+    }
+
+    /*
+     * Fallback a tőled kapott aktuális endpoint.
+     */
+    return new URL("/assets/27d12b5/upload.php", location.origin).href;
+  }
+
+  function buildUploadUrl() {
+    const instanceName = getCkeditorInstanceName();
+
+    const url = new URL(findUploadUrl());
+
+    if (!url.searchParams.has("opener")) {
+      url.searchParams.set("opener", "ckeditor");
+    }
+
+    if (!url.searchParams.has("type")) {
+      url.searchParams.set("type", "files");
+    }
+
+    if (!url.searchParams.has("CKEditor")) {
+      url.searchParams.set("CKEditor", instanceName);
+    }
+
+    if (!url.searchParams.has("CKEditorFuncNum")) {
+      url.searchParams.set("CKEditorFuncNum", "1");
+    }
+
+    if (!url.searchParams.has("langCode")) {
+      url.searchParams.set("langCode", "hu");
+    }
+
+    return url.href;
+  }
+
+  function decodeHtmlEntities(value) {
+    const textarea = document.createElement("textarea");
+
+    textarea.innerHTML = value;
+
+    return textarea.value;
+  }
+
+  function parseUploadResponse(responseText) {
+    try {
+      const json = JSON.parse(responseText);
+
+      if (json.url) {
+        return json.url;
+      }
+
+      if (json.file?.url) {
+        return json.file.url;
+      }
+
+      if (json.uploadedUrl) {
+        return json.uploadedUrl;
+      }
+    } catch {
+      // Nem JSON.
+    }
+
+    /*
+     * CKEditor 4 klasszikus válasz:
+     *
+     * window.parent.CKEDITOR.tools.callFunction(
+     *     1,
+     *     '/path/image.jpg',
+     *     ''
+     * );
+     */
+
+    const match = responseText.match(
+      /callFunction\s*\(\s*\d+\s*,\s*(['"])(.*?)\1/s,
+    );
+
+    if (match?.[2]) {
+      let url = match[2];
+
+      url = url.replace(/\\\//g, "/").replace(/\\"/g, '"').replace(/\\'/g, "'");
+
+      return decodeHtmlEntities(url);
+    }
+
+    throw new Error(
+      "A kép feltöltődött, de a szerver válaszából nem sikerült kiolvasni az URL-t.",
+    );
+  }
+
+  async function uploadImageToDrupal(blob, filename) {
+    const formData = new FormData();
+
+    formData.append("upload", blob, filename);
+
+    formData.append("_csrf", getDrupalCsrfToken());
+
+    formData.append("ckCsrfToken", getCkeditorCsrfToken());
+
+    const response = await fetch(buildUploadUrl(), {
+      method: "POST",
+
+      credentials: "include",
+
+      body: formData,
+    });
+
+    const responseText = await response.text();
+
+    if (!response.ok) {
+      throw new Error(
+        `Képfeltöltési hiba (${filename}): HTTP ${response.status}`,
+      );
+    }
+
+    const uploadedUrl = parseUploadResponse(responseText);
+
+    return new URL(uploadedUrl, location.origin).href;
+  }
+
+  function resolveZipPath(baseDirectory, target) {
+    if (!target) {
+      return null;
+    }
+
+    if (target.startsWith("/")) {
+      return target.replace(/^\/+/, "");
+    }
+
+    const parts = `${baseDirectory}/${target}`.split("/");
+
+    const output = [];
+
+    for (const part of parts) {
+      if (!part || part === ".") {
+        continue;
+      }
+
+      if (part === "..") {
+        output.pop();
+        continue;
+      }
+
+      output.push(part);
+    }
+
+    return output.join("/");
+  }
+
+  async function uploadDocumentImages(
+    zip,
+    documentXml,
+    relationships,
+    progress,
+  ) {
+    const relationIds = new Set();
+
+    /*
+     * Modern DOCX DrawingML.
+     */
+    for (const blip of descendants(documentXml, "blip")) {
+      const id = getWordAttribute(blip, "embed");
+
+      if (id) {
+        relationIds.add(id);
+      }
+    }
+
+    /*
+     * Régebbi VML képek.
+     */
+    for (const imageData of descendants(documentXml, "imagedata")) {
+      const id = getWordAttribute(imageData, "id");
+
+      if (id) {
+        relationIds.add(id);
+      }
+    }
+
+    const ids = [...relationIds];
+
+    const uploaded = new Map();
+
+    if (!ids.length) {
+      return uploaded;
+    }
+
+    for (let index = 0; index < ids.length; index++) {
+      const relationId = ids[index];
+
+      const relationship = relationships.get(relationId);
+
+      if (!relationship?.target) {
+        continue;
+      }
+
+      /*
+       * Külső kép URL.
+       */
+      if (relationship.targetMode === "External") {
+        uploaded.set(relationId, relationship.target);
+
+        continue;
+      }
+
+      const zipPath = resolveZipPath("word", relationship.target);
+
+      const imageFile = zip.file(zipPath);
+
+      if (!imageFile) {
+        console.warn("A DOCX-ben hivatkozott kép nem található:", zipPath);
+
+        continue;
+      }
+
+      const filename = zipPath.split("/").pop() || `image-${index + 1}.png`;
+
+      progress?.(`Kép feltöltése ${index + 1}/${ids.length}: ${filename}`);
+
+      const arrayBuffer = await imageFile.async("arraybuffer");
+
+      const blob = new Blob([arrayBuffer], {
+        type: getMimeType(filename),
+      });
+
+      try {
+        const uploadedUrl = await uploadImageToDrupal(blob, filename);
+
+        uploaded.set(relationId, uploadedUrl);
+      } catch (error) {
+        throw new Error(
+          `A(z) "${filename}" kép feltöltése sikertelen: ${error.message || error}`,
+        );
+      }
+    }
+
+    return uploaded;
+  }
+
+  // =========================================================
+  // IMAGE RENDERING
+  // =========================================================
+
+  function getDrawingRelationId(drawing) {
+    const blip = firstDescendant(drawing, "blip");
+
+    if (blip) {
+      const id = getWordAttribute(blip, "embed");
+
+      if (id) {
+        return id;
+      }
+    }
+
+    const imageData = firstDescendant(drawing, "imagedata");
+
+    if (imageData) {
+      return getWordAttribute(imageData, "id") || null;
+    }
+
+    return null;
+  }
+
+  function getDrawingSize(drawing) {
+    /*
+     * DrawingML:
+     * <wp:extent cx="..." cy="...">
+     */
+    const extent = firstDescendant(drawing, "extent");
+
+    if (extent) {
+      const cx = extent.getAttribute("cx");
+
+      const cy = extent.getAttribute("cy");
+
+      const width = emuToPx(cx);
+
+      const height = emuToPx(cy);
+
+      if (width && height) {
+        return {
+          width,
+          height,
+        };
+      }
+    }
+
+    /*
+     * Régi VML:
+     * style="width:123pt;height:55pt"
+     */
+    const shape = firstDescendant(drawing, "shape");
+
+    if (shape) {
+      const style = shape.getAttribute("style") || "";
+
+      const width = style.match(/width\s*:\s*([\d.]+)(pt|px)/i);
+
+      const height = style.match(/height\s*:\s*([\d.]+)(pt|px)/i);
+
+      return {
+        width: width ? `${width[1]}${width[2]}` : null,
+
+        height: height ? `${height[1]}${height[2]}` : null,
+      };
+    }
+
+    return {
+      width: null,
+
+      height: null,
+    };
+  }
+
+  function getDrawingAltText(drawing) {
+    const docPr = firstDescendant(drawing, "docPr");
+
+    if (!docPr) {
+      return "";
+    }
+
+    return (
+      docPr.getAttribute("descr") ||
+      docPr.getAttribute("title") ||
+      docPr.getAttribute("name") ||
+      ""
+    );
+  }
+
+  function drawingToHtml(drawing, context) {
+    const relationId = getDrawingRelationId(drawing);
+
+    if (!relationId) {
+      return "";
+    }
+
+    const url = context.imageUrls.get(relationId);
+
+    if (!url) {
+      return "";
+    }
+
+    const size = getDrawingSize(drawing);
+
+    const alt = getDrawingAltText(drawing);
+
+    const styles = {
+      display: "inline-block",
+
+      border: "0",
+    };
+
+    if (size.width) {
+      styles.width =
+        typeof size.width === "number" ? `${size.width}px` : size.width;
+    }
+
+    if (size.height) {
+      styles.height =
+        typeof size.height === "number" ? `${size.height}px` : size.height;
+    }
+
+    return (
+      `<img src="${escapeAttribute(url)}"` +
+      ` alt="${escapeAttribute(alt)}"` +
+      ` style="${escapeAttribute(cssString(styles))}">`
+    );
+  }
+
+  // =========================================================
   // RUN RENDERING
   // =========================================================
 
@@ -849,22 +1676,36 @@
 
       if (name === "t" || name === "delText") {
         content += escapeHtml(child.textContent || "");
+
+        continue;
       }
 
       if (name === "tab") {
         content += '<span style="display:inline-block;width:4em"></span>';
+
+        continue;
       }
 
       if (name === "br" || name === "cr") {
         content += "<br>";
+
+        continue;
       }
 
       if (name === "noBreakHyphen") {
         content += "&#8209;";
+
+        continue;
       }
 
       if (name === "softHyphen") {
         content += "&shy;";
+
+        continue;
+      }
+
+      if (name === "drawing" || name === "pict" || name === "object") {
+        content += drawingToHtml(child, context);
       }
     }
 
@@ -965,7 +1806,7 @@
   // PARAGRAPH
   // =========================================================
 
-  function paragraphToHtml(paragraph, baseContext) {
+  function buildParagraphDescriptor(paragraph, baseContext) {
     const paragraphStyleId = getParagraphStyleId(paragraph);
 
     const paragraphStyle = resolveStyle(
@@ -977,10 +1818,37 @@
 
     const directParagraph = parseParagraphProperties(directPPr);
 
+    /*
+     * Először kiderítjük, hogy lista-e.
+     */
+    const preliminary = mergeObjects(
+      baseContext.styleSystem.defaults.paragraph,
+
+      paragraphStyle.paragraph,
+
+      directParagraph,
+    );
+
+    const listInfo = preliminary.numId
+      ? getNumberingLevel(
+          baseContext.numberingSystem,
+
+          preliminary.numId,
+
+          preliminary.listLevel || 0,
+        )
+      : null;
+
+    /*
+     * A numbering level saját paragraph
+     * property-jeit is ráolvassuk.
+     */
     const paragraphProperties = mergeObjects(
       baseContext.styleSystem.defaults.paragraph,
 
       paragraphStyle.paragraph,
+
+      listInfo?.paragraph,
 
       directParagraph,
     );
@@ -1010,10 +1878,9 @@
       paragraphCss["line-height"] = "1.08";
     }
 
-    const css = cssString(paragraphCss);
-
     const plainContent = content
       .replace(/<br\s*\/?>/gi, "")
+      .replace(/<img\b[^>]*>/gi, "IMAGE")
       .replace(/<[^>]+>/g, "")
       .replace(/&nbsp;/gi, "")
       .replace(/&emsp;/gi, "")
@@ -1021,15 +1888,46 @@
 
     const isEmpty = plainContent === "";
 
-    /*
-     * Üres Word bekezdést is megtartjuk.
-     */
+    const css = cssString(paragraphCss);
 
-    if (isEmpty) {
-      return `<p style="${escapeAttribute(css)}">` + "<br>" + "</p>";
+    const html =
+      `<p style="${escapeAttribute(css)}">` +
+      (isEmpty ? "<br>" : content) +
+      "</p>";
+
+    /*
+     * Lista LI esetén a böngésző marker kezeli
+     * a hanging indentet, ezért a negatív
+     * text-indentet nem duplázzuk.
+     */
+    const listCss = {
+      ...paragraphCss,
+    };
+
+    if (listInfo) {
+      delete listCss["text-indent"];
+
+      /*
+       * A lista wrapper már ad egy marker-helyet.
+       * A Word margin-left azért megmarad, mert
+       * az tartalmazhat fontos szintkülönbséget.
+       */
+      listCss["list-style-position"] = "outside";
     }
 
-    return `<p style="${escapeAttribute(css)}">` + content + "</p>";
+    return {
+      html,
+      content,
+      isEmpty,
+
+      numId: paragraphProperties.numId || null,
+
+      listLevel: Number(paragraphProperties.listLevel || 0),
+
+      listInfo,
+
+      listCss,
+    };
   }
 
   // =========================================================
@@ -1076,6 +1974,7 @@
 
     const styles = {
       padding: "0",
+
       "vertical-align": "top",
     };
 
@@ -1204,34 +2103,6 @@
     return 1;
   }
 
-  function tableCellToHtml(cell, context) {
-    const content = [];
-
-    for (const child of cell.children) {
-      const name = localName(child);
-
-      if (name === "p") {
-        content.push(paragraphToHtml(child, context));
-      }
-
-      if (name === "tbl") {
-        content.push(tableToHtml(child, context));
-      }
-    }
-
-    const styles = getCellStyles(cell);
-
-    const colspan = getCellColspan(cell);
-
-    const colspanAttribute = colspan > 1 ? ` colspan="${colspan}"` : "";
-
-    return (
-      `<td${colspanAttribute} style="${escapeAttribute(cssString(styles))}">` +
-      content.join("") +
-      "</td>"
-    );
-  }
-
   function getTableStyles(table) {
     const tblPr = firstDirectChild(table, "tblPr");
 
@@ -1288,6 +2159,93 @@
     return styles;
   }
 
+  // =========================================================
+  // BLOCK RENDERING
+  // =========================================================
+
+  function renderElements(elements, context) {
+    const output = [];
+
+    let index = 0;
+
+    while (index < elements.length) {
+      const child = elements[index];
+
+      const name = localName(child);
+
+      if (name === "p") {
+        const paragraph = buildParagraphDescriptor(child, context);
+
+        if (paragraph.listInfo && paragraph.numId) {
+          const listItems = [paragraph];
+
+          let nextIndex = index + 1;
+
+          while (nextIndex < elements.length) {
+            const next = elements[nextIndex];
+
+            if (localName(next) !== "p") {
+              break;
+            }
+
+            const nextParagraph = buildParagraphDescriptor(next, context);
+
+            if (
+              !nextParagraph.listInfo ||
+              nextParagraph.numId !== paragraph.numId
+            ) {
+              break;
+            }
+
+            listItems.push(nextParagraph);
+
+            nextIndex++;
+          }
+
+          output.push(renderListItems(listItems));
+
+          index = nextIndex;
+
+          continue;
+        }
+
+        output.push(paragraph.html);
+
+        index++;
+
+        continue;
+      }
+
+      if (name === "tbl") {
+        output.push(tableToHtml(child, context));
+
+        index++;
+
+        continue;
+      }
+
+      index++;
+    }
+
+    return output.join("");
+  }
+
+  function tableCellToHtml(cell, context) {
+    const content = renderElements([...cell.children], context);
+
+    const styles = getCellStyles(cell);
+
+    const colspan = getCellColspan(cell);
+
+    const colspanAttribute = colspan > 1 ? ` colspan="${colspan}"` : "";
+
+    return (
+      `<td${colspanAttribute} style="${escapeAttribute(cssString(styles))}">` +
+      content +
+      "</td>"
+    );
+  }
+
   function tableToHtml(table, context) {
     const rows = [];
 
@@ -1309,25 +2267,8 @@
   }
 
   // =========================================================
-  // SAFE HTML CLEANUP
+  // SAFE CLEANUP
   // =========================================================
-
-  /*
-   * Ezek valóban öröklődő CSS tulajdonságok.
-   * Ha a gyermek ugyanazt az értéket ismétli,
-   * amit már a szülőtől örököl, nyugodtan
-   * eltávolíthatjuk.
-   *
-   * Direkt NEM rakunk ide olyanokat, mint:
-   *
-   * background-color
-   * margin
-   * padding
-   * vertical-align
-   * text-decoration
-   *
-   * mert ezeknél könnyen változna a kinézet.
-   */
 
   const SAFE_INHERITED_PROPERTIES = new Set([
     "color",
@@ -1360,11 +2301,6 @@
         continue;
       }
 
-      /*
-       * Map miatt a második azonos
-       * property automatikusan felülírja
-       * az elsőt.
-       */
       result.set(property, value);
     }
 
@@ -1419,10 +2355,6 @@
     const spans = [...root.querySelectorAll("span[style]")];
 
     for (const span of spans) {
-      if (!span.isConnected && !span.parentNode) {
-        continue;
-      }
-
       const styles = parseInlineStyle(span.getAttribute("style"));
 
       for (const property of [...styles.keys()]) {
@@ -1430,17 +2362,16 @@
           continue;
         }
 
-        const parentValue = getInheritedInlineValue(span, property);
+        const inherited = getInheritedInlineValue(span, property);
 
-        if (parentValue === null) {
+        if (inherited === null) {
           continue;
         }
 
-        const ownValue = normalizeCssValue(styles.get(property));
-
-        const inheritedValue = normalizeCssValue(parentValue);
-
-        if (ownValue === inheritedValue) {
+        if (
+          normalizeCssValue(styles.get(property)) ===
+          normalizeCssValue(inherited)
+        ) {
           styles.delete(property);
         }
       }
@@ -1453,37 +2384,7 @@
     }
   }
 
-  function removeEmptySpans(root) {
-    const spans = [...root.querySelectorAll("span")];
-
-    for (const span of spans) {
-      /*
-       * Az üres, szélességet adó TAB spanhez
-       * nem nyúlunk.
-       */
-
-      const style = parseInlineStyle(span.getAttribute("style") || "");
-
-      const isLayoutSpan =
-        style.has("display") || style.has("width") || style.has("height");
-
-      if (isLayoutSpan) {
-        continue;
-      }
-
-      if (span.attributes.length === 0 && span.childNodes.length === 0) {
-        span.remove();
-      }
-    }
-  }
-
   function unwrapRedundantSpans(root) {
-    /*
-     * Többször futtatjuk, mert ha egy külső
-     * span eltűnik, attól egy belső is
-     * fölöslegessé válhat.
-     */
-
     let changed = true;
 
     while (changed) {
@@ -1551,65 +2452,6 @@
     }
   }
 
-  function mergeNestedIdenticalSpans(root) {
-    let changed = true;
-
-    while (changed) {
-      changed = false;
-
-      const spans = [...root.querySelectorAll("span")];
-
-      for (const outer of spans) {
-        if (outer.children.length !== 1 || outer.childNodes.length !== 1) {
-          continue;
-        }
-
-        const inner = outer.firstElementChild;
-
-        if (!inner || inner.tagName !== "SPAN") {
-          continue;
-        }
-
-        if (!sameAttributes(outer, inner)) {
-          continue;
-        }
-
-        outer.innerHTML = inner.innerHTML;
-
-        changed = true;
-      }
-    }
-  }
-
-  function removeSafeRedundantCss(root) {
-    for (const element of root.querySelectorAll("[style]")) {
-      const styles = parseInlineStyle(element.getAttribute("style"));
-
-      /*
-       * display:inline az alap egy spanen.
-       */
-      if (
-        element.tagName === "SPAN" &&
-        normalizeCssValue(styles.get("display")) === "inline"
-      ) {
-        styles.delete("display");
-      }
-
-      /*
-       * border-spacing:0 border-collapse:collapse
-       * mellett redundáns lehet, de megtartjuk,
-       * mert Drupal/email renderernél inkább
-       * legyünk konzervatívak.
-       */
-
-      if (styles.size === 0) {
-        element.removeAttribute("style");
-      } else {
-        element.setAttribute("style", serializeInlineStyle(styles));
-      }
-    }
-  }
-
   function cleanupHtml(html) {
     const template = document.createElement("template");
 
@@ -1617,46 +2459,10 @@
 
     const root = template.content;
 
-    /*
-     * 1. CSS declaration normalizálás.
-     */
     normalizeStyleAttributes(root);
 
-    /*
-     * 2. Spanekből kiszedjük azt a font/color
-     *    formázást, amit már ugyanúgy örökölnek.
-     */
     removeInheritedSpanStyles(root);
 
-    /*
-     * 3. Attribute nélküli wrapper spanek.
-     */
-    unwrapRedundantSpans(root);
-
-    /*
-     * 4. Egymásba ágyazott azonos spanek.
-     */
-    mergeNestedIdenticalSpans(root);
-
-    /*
-     * 5. Egymás melletti azonos spanek.
-     */
-    mergeAdjacentSpans(root);
-
-    /*
-     * 6. Ténylegesen üres spanek.
-     */
-    removeEmptySpans(root);
-
-    /*
-     * 7. Utolsó biztonságos CSS cleanup.
-     */
-    removeSafeRedundantCss(root);
-
-    /*
-     * 8. Az előző lépések után megint lehettek
-     *    fölösleges wrapper spanek.
-     */
     unwrapRedundantSpans(root);
 
     mergeAdjacentSpans(root);
@@ -1670,7 +2476,9 @@
   // DOCUMENT CONVERSION
   // =========================================================
 
-  async function convertDocxToHtml(file) {
+  async function convertDocxToHtml(file, progress) {
+    progress?.("DOCX megnyitása...");
+
     const JSZip = await ensureJSZip();
 
     const zip = await JSZip.loadAsync(file);
@@ -1681,19 +2489,34 @@
       throw new Error("Ez nem érvényes DOCX fájl.");
     }
 
+    const documentXmlText = await documentFile.async("text");
+
+    const documentXml = parseXml(documentXmlText);
+
+    progress?.("Word stílusok feldolgozása...");
+
     const themeFonts = await readThemeFonts(zip);
 
-    const [documentXmlText, styleSystem, relationships] = await Promise.all([
-      documentFile.async("text"),
-
+    const [styleSystem, numberingSystem, relationships] = await Promise.all([
       readStyleSystem(zip, themeFonts),
+
+      readNumberingSystem(zip, themeFonts),
 
       readRelationships(zip),
     ]);
 
-    const xml = parseXml(documentXmlText);
+    progress?.("Képek keresése...");
 
-    const body = descendants(xml, "body")[0];
+    const imageUrls = await uploadDocumentImages(
+      zip,
+      documentXml,
+      relationships,
+      progress,
+    );
+
+    progress?.("HTML generálása...");
+
+    const body = descendants(documentXml, "body")[0];
 
     if (!body) {
       throw new Error("Nem található a dokumentum tartalma.");
@@ -1703,7 +2526,9 @@
       zip,
       themeFonts,
       styleSystem,
+      numberingSystem,
       relationships,
+      imageUrls,
 
       paragraphStyle: {
         paragraph: {},
@@ -1711,32 +2536,11 @@
       },
     };
 
-    const output = [];
+    const rawHtml = renderElements([...body.children], context);
 
-    for (const child of body.children) {
-      const name = localName(child);
+    progress?.("HTML tisztítása...");
 
-      if (name === "p") {
-        output.push(paragraphToHtml(child, context));
-      }
-
-      if (name === "tbl") {
-        output.push(tableToHtml(child, context));
-      }
-    }
-
-    /*
-     * Először elkészül a vizuálisan pontos,
-     * bőbeszédű HTML.
-     *
-     * UTÁNA takarítunk.
-     */
-
-    const rawHtml = output.join("\n");
-
-    const optimizedHtml = cleanupHtml(rawHtml);
-
-    return optimizedHtml;
+    return cleanupHtml(rawHtml);
   }
 
   // =========================================================
@@ -1954,16 +2758,16 @@
         return;
       }
 
-      status.textContent = "Feldolgozás és optimalizálás...";
-
       output.value = "";
 
       try {
-        const html = await convertDocxToHtml(file);
+        const html = await convertDocxToHtml(file, (message) => {
+          status.textContent = message;
+        });
 
         output.value = html;
 
-        status.textContent = `Kész és optimalizálva: ${file.name}`;
+        status.textContent = `Kész: ${file.name}`;
       } catch (error) {
         console.error("[DOCX → Drupal]", error);
 
