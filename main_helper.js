@@ -52,7 +52,7 @@
     },
     {
       hostnames: ["hirlevel.pte.hu"],
-      script: "hirlevel/grupal.js",
+      script: "hirlevel/drupal.js",
     },
   ];
 

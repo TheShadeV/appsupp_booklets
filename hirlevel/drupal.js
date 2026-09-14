@@ -1,10 +1,9 @@
 (async () => {
-  const APP_ID = "docx-grupal-converter-panel";
+  const APP_ID = "docx-drupal-converter-panel";
 
   const JSZIP_URL =
     "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";
 
-  // Ha már nyitva van a panel, ne hozzunk létre még egyet.
   if (document.getElementById(APP_ID)) {
     document.getElementById(APP_ID).scrollIntoView({
       behavior: "smooth",
@@ -63,7 +62,7 @@
   }
 
   function escapeHtml(value = "") {
-    return value
+    return String(value)
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
@@ -91,6 +90,14 @@
     return element?.localName || element?.nodeName?.split(":").pop() || "";
   }
 
+  function directChildren(element, name) {
+    if (!element) {
+      return [];
+    }
+
+    return [...element.children].filter((child) => localName(child) === name);
+  }
+
   function getWordAttribute(element, attributeName) {
     if (!element) {
       return null;
@@ -106,22 +113,125 @@
     );
   }
 
-  function directChildren(element, name) {
-    return [...element.children].filter((child) => localName(child) === name);
+  function getRelationshipId(element) {
+    if (!element) {
+      return null;
+    }
+
+    return (
+      element.getAttribute("r:id") ||
+      [...element.attributes].find((attribute) => attribute.localName === "id")
+        ?.value ||
+      null
+    );
+  }
+
+  function isPropertyEnabled(element) {
+    if (!element) {
+      return false;
+    }
+
+    const value = getWordAttribute(element, "val");
+
+    if (value === null) {
+      return true;
+    }
+
+    return !["0", "false", "off", "none"].includes(String(value).toLowerCase());
+  }
+
+  function normalizeHexColor(value) {
+    if (!value) {
+      return null;
+    }
+
+    value = String(value).trim();
+
+    if (
+      !value ||
+      value.toLowerCase() === "auto" ||
+      value.toLowerCase() === "none"
+    ) {
+      return null;
+    }
+
+    value = value.replace(/^#/, "");
+
+    if (/^[0-9a-f]{6}$/i.test(value)) {
+      return `#${value}`;
+    }
+
+    if (/^[0-9a-f]{3}$/i.test(value)) {
+      return `#${value}`;
+    }
+
+    return null;
+  }
+
+  function wordHighlightToCss(value) {
+    if (!value) {
+      return null;
+    }
+
+    const colors = {
+      black: "#000000",
+      blue: "#0000ff",
+      cyan: "#00ffff",
+      green: "#008000",
+      magenta: "#ff00ff",
+      red: "#ff0000",
+      yellow: "#ffff00",
+      white: "#ffffff",
+
+      darkBlue: "#00008b",
+      darkCyan: "#008b8b",
+      darkGreen: "#006400",
+      darkMagenta: "#8b008b",
+      darkRed: "#8b0000",
+      darkYellow: "#808000",
+
+      darkGray: "#a9a9a9",
+      lightGray: "#d3d3d3",
+    };
+
+    if (value === "none" || value === "auto") {
+      return null;
+    }
+
+    return colors[value] || null;
+  }
+
+  function cssString(styles) {
+    return Object.entries(styles)
+      .filter(
+        ([, value]) => value !== null && value !== undefined && value !== "",
+      )
+      .map(([property, value]) => `${property}:${value}`)
+      .join(";");
+  }
+
+  function twipsToPx(value) {
+    const number = Number(value);
+
+    if (!Number.isFinite(number)) {
+      return null;
+    }
+
+    return `${number / 15}px`;
   }
 
   async function readRelationships(zip) {
     const file = zip.file("word/_rels/document.xml.rels");
 
+    const relationships = new Map();
+
     if (!file) {
-      return new Map();
+      return relationships;
     }
 
     const xmlText = await file.async("text");
 
     const xml = parseXml(xmlText);
-
-    const relationships = new Map();
 
     for (const relationship of xml.getElementsByTagName("*")) {
       if (localName(relationship) !== "Relationship") {
@@ -132,9 +242,7 @@
 
       const target = relationship.getAttribute("Target");
 
-      const targetMode = relationship.getAttribute("TargetMode");
-
-      if (id && target && targetMode === "External") {
+      if (id && target) {
         relationships.set(id, target);
       }
     }
@@ -175,13 +283,11 @@
   }
 
   function getParagraphStyle(paragraph, styles) {
-    const paragraphProperties = directChildren(paragraph, "pPr")[0];
+    const pPr = directChildren(paragraph, "pPr")[0];
 
-    const paragraphStyle = paragraphProperties
-      ? directChildren(paragraphProperties, "pStyle")[0]
-      : null;
+    const pStyle = pPr ? directChildren(pPr, "pStyle")[0] : null;
 
-    const styleId = getWordAttribute(paragraphStyle, "val") || "";
+    const styleId = getWordAttribute(pStyle, "val") || "";
 
     const styleName = styles.get(styleId) || styleId;
 
@@ -194,47 +300,246 @@
   function detectHeadingLevel(styleId, styleName) {
     const value = `${styleId} ${styleName}`.toLowerCase();
 
-    const patterns = [
-      /heading\s*1/,
-      /heading\s*2/,
-      /heading\s*3/,
-      /heading\s*4/,
-      /heading\s*5/,
-      /heading\s*6/,
+    const headingMatch = value.match(/heading\s*([1-6])/);
 
-      /címsor\s*1/,
-      /címsor\s*2/,
-      /címsor\s*3/,
-      /címsor\s*4/,
-      /címsor\s*5/,
-      /címsor\s*6/,
-    ];
-
-    for (let index = 0; index < patterns.length; index++) {
-      if (patterns[index].test(value)) {
-        return (index % 6) + 1;
-      }
+    if (headingMatch) {
+      return Number(headingMatch[1]);
     }
 
-    const compactMatch = value.match(/heading([1-6])/);
+    const headingCompactMatch = value.match(/heading([1-6])/);
 
-    if (compactMatch) {
-      return Number(compactMatch[1]);
+    if (headingCompactMatch) {
+      return Number(headingCompactMatch[1]);
+    }
+
+    const hungarianMatch = value.match(/címsor\s*([1-6])/);
+
+    if (hungarianMatch) {
+      return Number(hungarianMatch[1]);
     }
 
     return null;
   }
 
+  function getParagraphCss(paragraph) {
+    const pPr = directChildren(paragraph, "pPr")[0];
+
+    if (!pPr) {
+      return "";
+    }
+
+    const styles = {};
+
+    /*
+     * Szövegigazítás
+     */
+    const justification = directChildren(pPr, "jc")[0];
+
+    const justificationValue = getWordAttribute(justification, "val");
+
+    const alignmentMap = {
+      left: "left",
+      start: "left",
+      center: "center",
+      right: "right",
+      end: "right",
+
+      both: "justify",
+      distribute: "justify",
+      numTab: "left",
+    };
+
+    if (justificationValue && alignmentMap[justificationValue]) {
+      styles["text-align"] = alignmentMap[justificationValue];
+    }
+
+    /*
+     * Bekezdés háttérszíne
+     */
+    const shading = directChildren(pPr, "shd")[0];
+
+    const shadingColor = normalizeHexColor(getWordAttribute(shading, "fill"));
+
+    if (shadingColor) {
+      styles["background-color"] = shadingColor;
+    }
+
+    /*
+     * Behúzások
+     */
+    const indentation = directChildren(pPr, "ind")[0];
+
+    if (indentation) {
+      const left =
+        getWordAttribute(indentation, "left") ||
+        getWordAttribute(indentation, "start");
+
+      const right =
+        getWordAttribute(indentation, "right") ||
+        getWordAttribute(indentation, "end");
+
+      const firstLine = getWordAttribute(indentation, "firstLine");
+
+      const hanging = getWordAttribute(indentation, "hanging");
+
+      if (left) {
+        styles["margin-left"] = twipsToPx(left);
+      }
+
+      if (right) {
+        styles["margin-right"] = twipsToPx(right);
+      }
+
+      if (firstLine) {
+        styles["text-indent"] = twipsToPx(firstLine);
+      }
+
+      if (hanging) {
+        const px = Number(hanging) / 15;
+
+        styles["text-indent"] = `${-px}px`;
+      }
+    }
+
+    /*
+     * Térköz / sorköz
+     */
+    const spacing = directChildren(pPr, "spacing")[0];
+
+    if (spacing) {
+      const before = getWordAttribute(spacing, "before");
+
+      const after = getWordAttribute(spacing, "after");
+
+      const line = getWordAttribute(spacing, "line");
+
+      const lineRule = getWordAttribute(spacing, "lineRule");
+
+      if (before) {
+        styles["margin-top"] = twipsToPx(before);
+      }
+
+      if (after) {
+        styles["margin-bottom"] = twipsToPx(after);
+      }
+
+      if (line) {
+        if (lineRule === "exact" || lineRule === "atLeast") {
+          styles["line-height"] = twipsToPx(line);
+        } else {
+          const number = Number(line);
+
+          if (Number.isFinite(number)) {
+            styles["line-height"] = String(number / 240);
+          }
+        }
+      }
+    }
+
+    return cssString(styles);
+  }
+
+  function getRunCss(run) {
+    const rPr = directChildren(run, "rPr")[0];
+
+    if (!rPr) {
+      return "";
+    }
+
+    const styles = {};
+
+    /*
+     * Szövegszín
+     */
+    const colorElement = directChildren(rPr, "color")[0];
+
+    const color = normalizeHexColor(getWordAttribute(colorElement, "val"));
+
+    if (color) {
+      styles.color = color;
+    }
+
+    /*
+     * Szövegkiemelés / highlight
+     */
+    const highlightElement = directChildren(rPr, "highlight")[0];
+
+    const highlightValue = getWordAttribute(highlightElement, "val");
+
+    const highlightColor = wordHighlightToCss(highlightValue);
+
+    if (highlightColor) {
+      styles["background-color"] = highlightColor;
+    }
+
+    /*
+     * Run shading.
+     * Ez is lehet Word háttérszín.
+     */
+    const shading = directChildren(rPr, "shd")[0];
+
+    const shadingColor = normalizeHexColor(getWordAttribute(shading, "fill"));
+
+    if (shadingColor) {
+      styles["background-color"] = shadingColor;
+    }
+
+    /*
+     * Betűméret.
+     * Word fél pontban tárolja.
+     *
+     * 24 = 12pt
+     */
+    const sizeElement = directChildren(rPr, "sz")[0];
+
+    const sizeValue = getWordAttribute(sizeElement, "val");
+
+    if (sizeValue) {
+      const size = Number(sizeValue);
+
+      if (Number.isFinite(size)) {
+        styles["font-size"] = `${size / 2}pt`;
+      }
+    }
+
+    /*
+     * Betűtípus
+     */
+    const fonts = directChildren(rPr, "rFonts")[0];
+
+    if (fonts) {
+      const font =
+        getWordAttribute(fonts, "ascii") ||
+        getWordAttribute(fonts, "hAnsi") ||
+        getWordAttribute(fonts, "eastAsia");
+
+      if (font) {
+        styles["font-family"] = `"${font.replaceAll('"', '\\"')}"`;
+      }
+    }
+
+    return cssString(styles);
+  }
+
   function runToHtml(run) {
-    const runProperties = directChildren(run, "rPr")[0];
+    const rPr = directChildren(run, "rPr")[0];
 
-    const isBold = !!(runProperties && directChildren(runProperties, "b")[0]);
+    const boldElement = rPr ? directChildren(rPr, "b")[0] : null;
 
-    const isItalic = !!(runProperties && directChildren(runProperties, "i")[0]);
+    const italicElement = rPr ? directChildren(rPr, "i")[0] : null;
 
-    const isUnderline = !!(
-      runProperties && directChildren(runProperties, "u")[0]
-    );
+    const underlineElement = rPr ? directChildren(rPr, "u")[0] : null;
+
+    const strikeElement = rPr ? directChildren(rPr, "strike")[0] : null;
+
+    const isBold = isPropertyEnabled(boldElement);
+
+    const isItalic = isPropertyEnabled(italicElement);
+
+    const isUnderline =
+      underlineElement && getWordAttribute(underlineElement, "val") !== "none";
+
+    const isStrike = isPropertyEnabled(strikeElement);
 
     let html = "";
 
@@ -245,12 +550,12 @@
 
       const name = localName(child);
 
-      if (name === "t") {
+      if (name === "t" || name === "instrText") {
         html += escapeHtml(child.textContent || "");
       }
 
       if (name === "tab") {
-        html += "    ";
+        html += "&emsp;";
       }
 
       if (name === "br" || name === "cr") {
@@ -262,6 +567,18 @@
       return "";
     }
 
+    /*
+     * Word CSS formázás
+     */
+    const runCss = getRunCss(run);
+
+    if (runCss) {
+      html = `<span style="${escapeAttribute(runCss)}">` + html + "</span>";
+    }
+
+    /*
+     * Szemantikus formázások
+     */
     if (isUnderline) {
       html = `<u>${html}</u>`;
     }
@@ -272,6 +589,10 @@
 
     if (isBold) {
       html = `<strong>${html}</strong>`;
+    }
+
+    if (isStrike) {
+      html = `<s>${html}</s>`;
     }
 
     return html;
@@ -287,21 +608,32 @@
 
       const name = localName(child);
 
+      /*
+       * Normál Word run.
+       */
       if (name === "r") {
         html += runToHtml(child);
 
         continue;
       }
 
+      /*
+       * Drupal számára normál HTML linket generálunk:
+       *
+       * <a href="...">...</a>
+       */
       if (name === "hyperlink") {
-        const relationshipId =
-          child.getAttribute("r:id") ||
-          [...child.attributes].find(
-            (attribute) => attribute.localName === "id",
-          )?.value ||
-          "";
+        const relationshipId = getRelationshipId(child);
 
-        const href = relationships.get(relationshipId);
+        const anchor = getWordAttribute(child, "anchor");
+
+        let href = null;
+
+        if (relationshipId && relationships.has(relationshipId)) {
+          href = relationships.get(relationshipId);
+        } else if (anchor) {
+          href = `#${anchor}`;
+        }
 
         const content = inlineChildrenToHtml(child, relationships);
 
@@ -314,7 +646,15 @@
         continue;
       }
 
-      if (name === "smartTag" || name === "sdt" || name === "ins") {
+      /*
+       * Word wrapper elemek.
+       */
+      if (
+        name === "smartTag" ||
+        name === "sdt" ||
+        name === "sdtContent" ||
+        name === "ins"
+      ) {
         html += inlineChildrenToHtml(child, relationships);
       }
     }
@@ -333,11 +673,74 @@
 
     const headingLevel = detectHeadingLevel(styleId, styleName);
 
+    const paragraphCss = getParagraphCss(paragraph);
+
+    const styleAttribute = paragraphCss
+      ? ` style="${escapeAttribute(paragraphCss)}"`
+      : "";
+
     if (headingLevel) {
-      return `<h${headingLevel}>` + content + `</h${headingLevel}>`;
+      return (
+        `<h${headingLevel}${styleAttribute}>` + content + `</h${headingLevel}>`
+      );
     }
 
-    return `<p>${content}</p>`;
+    return `<p${styleAttribute}>` + content + "</p>";
+  }
+
+  function getTableCellCss(cell) {
+    const tcPr = directChildren(cell, "tcPr")[0];
+
+    if (!tcPr) {
+      return "";
+    }
+
+    const styles = {};
+
+    /*
+     * Cella háttérszín
+     */
+    const shading = directChildren(tcPr, "shd")[0];
+
+    const background = normalizeHexColor(getWordAttribute(shading, "fill"));
+
+    if (background) {
+      styles["background-color"] = background;
+    }
+
+    /*
+     * Vertikális igazítás
+     */
+    const verticalAlign = directChildren(tcPr, "vAlign")[0];
+
+    const verticalAlignValue = getWordAttribute(verticalAlign, "val");
+
+    if (verticalAlignValue) {
+      const verticalMap = {
+        top: "top",
+        center: "middle",
+        bottom: "bottom",
+      };
+
+      if (verticalMap[verticalAlignValue]) {
+        styles["vertical-align"] = verticalMap[verticalAlignValue];
+      }
+    }
+
+    /*
+     * Cella szélesség
+     */
+    const widthElement = directChildren(tcPr, "tcW")[0];
+
+    const width = getWordAttribute(widthElement, "w");
+
+    const widthType = getWordAttribute(widthElement, "type");
+
+    if (width && widthType === "dxa") {
+      styles.width = twipsToPx(width);
+    }
+
+    return cssString(styles);
   }
 
   function tableCellToHtml(cell, styles, relationships) {
@@ -359,7 +762,13 @@
       }
     }
 
-    return "<td>" + parts.join("\n") + "</td>";
+    const cellCss = getTableCellCss(cell);
+
+    const styleAttribute = cellCss
+      ? ` style="${escapeAttribute(cellCss)}"`
+      : "";
+
+    return `<td${styleAttribute}>` + parts.join("\n") + "</td>";
   }
 
   function tableToHtml(table, styles, relationships) {
@@ -370,14 +779,14 @@
         tableCellToHtml(cell, styles, relationships),
       );
 
-      rows.push(`<tr>${cells.join("")}</tr>`);
+      rows.push("<tr>" + cells.join("") + "</tr>");
     }
 
-    return `
-<table border="0" cellpadding="0" cellspacing="0">
-${rows.join("\n")}
-</table>
-`.trim();
+    return [
+      '<table border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">',
+      ...rows,
+      "</table>",
+    ].join("\n");
   }
 
   async function convertDocxToHtml(file) {
@@ -393,9 +802,7 @@ ${rows.join("\n")}
 
     const [documentXmlText, styles, relationships] = await Promise.all([
       documentFile.async("text"),
-
       readStyles(zip),
-
       readRelationships(zip),
     ]);
 
@@ -437,13 +844,10 @@ ${rows.join("\n")}
 
     Object.assign(panel.style, {
       position: "fixed",
-
       top: "20px",
-
       right: "20px",
 
-      width: "560px",
-
+      width: "650px",
       maxWidth: "calc(100vw - 40px)",
 
       maxHeight: "calc(100vh - 40px)",
@@ -458,7 +862,7 @@ ${rows.join("\n")}
 
       borderRadius: "10px",
 
-      boxShadow: "0 12px 40px rgba(0, 0, 0, .25)",
+      boxShadow: "0 12px 40px rgba(0,0,0,.25)",
 
       padding: "16px",
 
@@ -482,11 +886,9 @@ ${rows.join("\n")}
                 "
             >
                 <strong
-                    style="
-                        font-size:16px;
-                    "
+                    style="font-size:16px;"
                 >
-                    DOCX → Grupal HTML
+                    DOCX → Drupal HTML
                 </strong>
 
                 <button
@@ -549,11 +951,9 @@ ${rows.join("\n")}
                 "
             >
                 <label
-                    style="
-                        font-weight:600;
-                    "
+                    style="font-weight:600;"
                 >
-                    HTML forrás
+                    Drupal HTML forrás
                 </label>
 
                 <button
@@ -577,7 +977,7 @@ ${rows.join("\n")}
                 placeholder="Ide kerül a generált HTML..."
                 style="
                     width:100%;
-                    height:320px;
+                    height:400px;
                     resize:vertical;
                     box-sizing:border-box;
                     border:1px solid #aaaaaa;
@@ -594,13 +994,13 @@ ${rows.join("\n")}
                     margin-top:10px;
                     font-size:12px;
                     color:#777777;
-                    line-height:1.4;
+                    line-height:1.5;
                 "
             >
-                Első verzió:
-                bekezdések, címsorok,
-                félkövér, dőlt és aláhúzott szöveg,
-                külső linkek és egyszerű táblázatok.
+                Megtartja többek között a címsorokat,
+                igazítást, sorkizárást, félkövér/dőlt/aláhúzott
+                formázást, szövegszínt, háttérszínt,
+                betűméretet, linkeket és egyszerű táblázatokat.
             </div>
         `;
 
@@ -671,20 +1071,12 @@ ${rows.join("\n")}
           status.textContent = "Nem találtam konvertálható tartalmat.";
         }
       } catch (error) {
-        console.error("[DOCX → Grupal]", error);
+        console.error("[DOCX → Drupal]", error);
 
         status.textContent = `Hiba: ${error.message || error}`;
       }
     });
   }
 
-  try {
-    createPanel();
-  } catch (error) {
-    console.error("[DOCX → Grupal]", error);
-
-    alert(
-      "A Grupal converter nem tudott elindulni:\n\n" + (error.message || error),
-    );
-  }
+  createPanel();
 })();
