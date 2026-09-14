@@ -38,6 +38,10 @@
       hostnames: ["scsm.tr.pte.hu", "scsm2.tr.pte.hu", "sm.pte.hu"],
       script: "hirlevel/script_min.js",
     },
+    {
+      hostnames: ["szemely.pte.hu"],
+      script: "szemely/script_min.js",
+    },
   ];
 
   /*
