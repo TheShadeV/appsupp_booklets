@@ -1,9 +1,3 @@
-# Ignore specific files
-src/config.js
-
-# Ignore directories
-dist/
-build/
 
 # Ignore by extension
-**/*md   
+*.md   

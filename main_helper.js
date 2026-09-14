@@ -42,6 +42,14 @@
       hostnames: ["szemely.pte.hu"],
       script: "szemely/script_min.js",
     },
+    {
+      hostnames: ["ekop.pte.hu", "kitep.pte.hu"],
+      script: "ekop_kitep/script_min.js",
+    },
+    {
+      hostnames: ["tk.pte.hu"],
+      script: "tk/script_min.js",
+    },
   ];
 
   /*
