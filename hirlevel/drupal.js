@@ -1,5 +1,6 @@
 (async () => {
   const APP_ID = "docx-drupal-converter-panel";
+
   const JSZIP_URL =
     "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";
 
@@ -19,13 +20,9 @@
           return;
         }
 
-        existing.addEventListener("load", resolve, {
-          once: true,
-        });
+        existing.addEventListener("load", resolve, { once: true });
 
-        existing.addEventListener("error", reject, {
-          once: true,
-        });
+        existing.addEventListener("error", reject, { once: true });
 
         return;
       }
@@ -228,7 +225,7 @@
   }
 
   // =========================================================
-  // WORD COLORS
+  // COLORS
   // =========================================================
 
   function wordHighlightToCss(value) {
@@ -459,7 +456,9 @@
     if (properties.verticalAlign) {
       styles["vertical-align"] = properties.verticalAlign;
 
-      styles["font-size"] = properties.fontSize || "0.75em";
+      if (!properties.fontSize) {
+        styles["font-size"] = "0.75em";
+      }
     }
 
     return styles;
@@ -490,9 +489,12 @@
       const map = {
         left: "left",
         start: "left",
+
         center: "center",
+
         right: "right",
         end: "right",
+
         both: "justify",
         distribute: "justify",
         thaiDistribute: "justify",
@@ -631,10 +633,11 @@
     }
 
     /*
-     * paddingot használunk a Word before/after
-     * térközhöz, így a CSS margin-collapse
-     * nem nyeli el az értékeket.
+     * Paddingot használunk a Word
+     * bekezdéstérközhöz, hogy ne legyen
+     * CSS margin collapse.
      */
+
     if (properties.spaceBefore) {
       styles["padding-top"] = properties.spaceBefore;
     }
@@ -695,8 +698,6 @@
         continue;
       }
 
-      const type = getWordAttribute(style, "type") || "";
-
       const nameElement = firstDirectChild(style, "name");
 
       const basedOnElement = firstDirectChild(style, "basedOn");
@@ -707,8 +708,6 @@
 
       system.styles.set(styleId, {
         id: styleId,
-
-        type,
 
         name: getWordAttribute(nameElement, "val") || styleId,
 
@@ -829,8 +828,11 @@
 
     return mergeObjects(
       context.styleSystem.defaults.run,
+
       context.paragraphStyle.run,
+
       runStyle.run,
+
       directRun,
     );
   }
@@ -884,7 +886,7 @@
   }
 
   // =========================================================
-  // LINKS + INLINE CONTENT
+  // LINKS / INLINE CONTENT
   // =========================================================
 
   function inlineChildrenToHtml(parent, context) {
@@ -998,17 +1000,8 @@
 
     const paragraphCss = paragraphPropertiesToCss(paragraphProperties);
 
-    /*
-     * A paragraph saját betűbeállításait is
-     * ráadjuk, mert üres sor esetén nincs run,
-     * amiből a böngésző tudná a méretet.
-     */
     Object.assign(paragraphCss, runPropertiesToCss(baseRunProperties));
 
-    /*
-     * Ha nincs Wordből fontméret,
-     * adjunk egy ésszerű Word fallbacket.
-     */
     if (!paragraphCss["font-size"]) {
       paragraphCss["font-size"] = "11pt";
     }
@@ -1029,8 +1022,9 @@
     const isEmpty = plainContent === "";
 
     /*
-     * Az üres Word bekezdéseket NEM dobjuk el.
+     * Üres Word bekezdést is megtartjuk.
      */
+
     if (isEmpty) {
       return `<p style="${escapeAttribute(css)}">` + "<br>" + "</p>";
     }
@@ -1039,7 +1033,7 @@
   }
 
   // =========================================================
-  // TABLE HELPERS
+  // TABLE
   // =========================================================
 
   function getBorderCss(border) {
@@ -1136,10 +1130,15 @@
     if (margins) {
       const map = {
         top: "padding-top",
+
         bottom: "padding-bottom",
+
         left: "padding-left",
+
         right: "padding-right",
+
         start: "padding-left",
+
         end: "padding-right",
       };
 
@@ -1163,10 +1162,15 @@
     if (borders) {
       const map = {
         top: "border-top",
+
         bottom: "border-bottom",
+
         left: "border-left",
+
         right: "border-right",
+
         start: "border-left",
+
         end: "border-right",
       };
 
@@ -1233,6 +1237,7 @@
 
     const styles = {
       "border-collapse": "collapse",
+
       "border-spacing": "0",
     };
 
@@ -1280,16 +1285,6 @@
       }
     }
 
-    const indent = firstDirectChild(tblPr, "tblInd");
-
-    if (indent) {
-      const value = getWordAttribute(indent, "w");
-
-      if (value) {
-        styles["margin-left"] = twipsToPt(value);
-      }
-    }
-
     return styles;
   }
 
@@ -1311,6 +1306,364 @@
       rows.join("") +
       "</table>"
     );
+  }
+
+  // =========================================================
+  // SAFE HTML CLEANUP
+  // =========================================================
+
+  /*
+   * Ezek valóban öröklődő CSS tulajdonságok.
+   * Ha a gyermek ugyanazt az értéket ismétli,
+   * amit már a szülőtől örököl, nyugodtan
+   * eltávolíthatjuk.
+   *
+   * Direkt NEM rakunk ide olyanokat, mint:
+   *
+   * background-color
+   * margin
+   * padding
+   * vertical-align
+   * text-decoration
+   *
+   * mert ezeknél könnyen változna a kinézet.
+   */
+
+  const SAFE_INHERITED_PROPERTIES = new Set([
+    "color",
+    "font-family",
+    "font-size",
+    "font-style",
+    "font-weight",
+    "line-height",
+  ]);
+
+  function parseInlineStyle(styleText) {
+    const result = new Map();
+
+    if (!styleText) {
+      return result;
+    }
+
+    for (const declaration of styleText.split(";")) {
+      const index = declaration.indexOf(":");
+
+      if (index < 0) {
+        continue;
+      }
+
+      const property = declaration.slice(0, index).trim().toLowerCase();
+
+      const value = declaration.slice(index + 1).trim();
+
+      if (!property || !value) {
+        continue;
+      }
+
+      /*
+       * Map miatt a második azonos
+       * property automatikusan felülírja
+       * az elsőt.
+       */
+      result.set(property, value);
+    }
+
+    return result;
+  }
+
+  function serializeInlineStyle(styles) {
+    return [...styles.entries()]
+      .map(([property, value]) => `${property}:${value}`)
+      .join(";");
+  }
+
+  function normalizeCssValue(value) {
+    if (value === null) {
+      return null;
+    }
+
+    return String(value).trim().replace(/\s+/g, " ").toLowerCase();
+  }
+
+  function getInheritedInlineValue(element, property) {
+    let parent = element.parentElement;
+
+    while (parent) {
+      const style = parseInlineStyle(parent.getAttribute("style") || "");
+
+      if (style.has(property)) {
+        return style.get(property);
+      }
+
+      parent = parent.parentElement;
+    }
+
+    return null;
+  }
+
+  function normalizeStyleAttributes(root) {
+    for (const element of root.querySelectorAll("[style]")) {
+      const styles = parseInlineStyle(element.getAttribute("style"));
+
+      if (styles.size === 0) {
+        element.removeAttribute("style");
+
+        continue;
+      }
+
+      element.setAttribute("style", serializeInlineStyle(styles));
+    }
+  }
+
+  function removeInheritedSpanStyles(root) {
+    const spans = [...root.querySelectorAll("span[style]")];
+
+    for (const span of spans) {
+      if (!span.isConnected && !span.parentNode) {
+        continue;
+      }
+
+      const styles = parseInlineStyle(span.getAttribute("style"));
+
+      for (const property of [...styles.keys()]) {
+        if (!SAFE_INHERITED_PROPERTIES.has(property)) {
+          continue;
+        }
+
+        const parentValue = getInheritedInlineValue(span, property);
+
+        if (parentValue === null) {
+          continue;
+        }
+
+        const ownValue = normalizeCssValue(styles.get(property));
+
+        const inheritedValue = normalizeCssValue(parentValue);
+
+        if (ownValue === inheritedValue) {
+          styles.delete(property);
+        }
+      }
+
+      if (styles.size === 0) {
+        span.removeAttribute("style");
+      } else {
+        span.setAttribute("style", serializeInlineStyle(styles));
+      }
+    }
+  }
+
+  function removeEmptySpans(root) {
+    const spans = [...root.querySelectorAll("span")];
+
+    for (const span of spans) {
+      /*
+       * Az üres, szélességet adó TAB spanhez
+       * nem nyúlunk.
+       */
+
+      const style = parseInlineStyle(span.getAttribute("style") || "");
+
+      const isLayoutSpan =
+        style.has("display") || style.has("width") || style.has("height");
+
+      if (isLayoutSpan) {
+        continue;
+      }
+
+      if (span.attributes.length === 0 && span.childNodes.length === 0) {
+        span.remove();
+      }
+    }
+  }
+
+  function unwrapRedundantSpans(root) {
+    /*
+     * Többször futtatjuk, mert ha egy külső
+     * span eltűnik, attól egy belső is
+     * fölöslegessé válhat.
+     */
+
+    let changed = true;
+
+    while (changed) {
+      changed = false;
+
+      const spans = [...root.querySelectorAll("span")];
+
+      for (const span of spans) {
+        if (span.attributes.length !== 0) {
+          continue;
+        }
+
+        span.replaceWith(...span.childNodes);
+
+        changed = true;
+      }
+    }
+  }
+
+  function sameAttributes(first, second) {
+    if (first.attributes.length !== second.attributes.length) {
+      return false;
+    }
+
+    for (const attribute of first.attributes) {
+      if (second.getAttribute(attribute.name) !== attribute.value) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  function mergeAdjacentSpans(root) {
+    let changed = true;
+
+    while (changed) {
+      changed = false;
+
+      const spans = [...root.querySelectorAll("span")];
+
+      for (const span of spans) {
+        const next = span.nextSibling;
+
+        if (
+          !next ||
+          next.nodeType !== Node.ELEMENT_NODE ||
+          next.tagName !== "SPAN"
+        ) {
+          continue;
+        }
+
+        if (!sameAttributes(span, next)) {
+          continue;
+        }
+
+        while (next.firstChild) {
+          span.appendChild(next.firstChild);
+        }
+
+        next.remove();
+
+        changed = true;
+      }
+    }
+  }
+
+  function mergeNestedIdenticalSpans(root) {
+    let changed = true;
+
+    while (changed) {
+      changed = false;
+
+      const spans = [...root.querySelectorAll("span")];
+
+      for (const outer of spans) {
+        if (outer.children.length !== 1 || outer.childNodes.length !== 1) {
+          continue;
+        }
+
+        const inner = outer.firstElementChild;
+
+        if (!inner || inner.tagName !== "SPAN") {
+          continue;
+        }
+
+        if (!sameAttributes(outer, inner)) {
+          continue;
+        }
+
+        outer.innerHTML = inner.innerHTML;
+
+        changed = true;
+      }
+    }
+  }
+
+  function removeSafeRedundantCss(root) {
+    for (const element of root.querySelectorAll("[style]")) {
+      const styles = parseInlineStyle(element.getAttribute("style"));
+
+      /*
+       * display:inline az alap egy spanen.
+       */
+      if (
+        element.tagName === "SPAN" &&
+        normalizeCssValue(styles.get("display")) === "inline"
+      ) {
+        styles.delete("display");
+      }
+
+      /*
+       * border-spacing:0 border-collapse:collapse
+       * mellett redundáns lehet, de megtartjuk,
+       * mert Drupal/email renderernél inkább
+       * legyünk konzervatívak.
+       */
+
+      if (styles.size === 0) {
+        element.removeAttribute("style");
+      } else {
+        element.setAttribute("style", serializeInlineStyle(styles));
+      }
+    }
+  }
+
+  function cleanupHtml(html) {
+    const template = document.createElement("template");
+
+    template.innerHTML = html;
+
+    const root = template.content;
+
+    /*
+     * 1. CSS declaration normalizálás.
+     */
+    normalizeStyleAttributes(root);
+
+    /*
+     * 2. Spanekből kiszedjük azt a font/color
+     *    formázást, amit már ugyanúgy örökölnek.
+     */
+    removeInheritedSpanStyles(root);
+
+    /*
+     * 3. Attribute nélküli wrapper spanek.
+     */
+    unwrapRedundantSpans(root);
+
+    /*
+     * 4. Egymásba ágyazott azonos spanek.
+     */
+    mergeNestedIdenticalSpans(root);
+
+    /*
+     * 5. Egymás melletti azonos spanek.
+     */
+    mergeAdjacentSpans(root);
+
+    /*
+     * 6. Ténylegesen üres spanek.
+     */
+    removeEmptySpans(root);
+
+    /*
+     * 7. Utolsó biztonságos CSS cleanup.
+     */
+    removeSafeRedundantCss(root);
+
+    /*
+     * 8. Az előző lépések után megint lehettek
+     *    fölösleges wrapper spanek.
+     */
+    unwrapRedundantSpans(root);
+
+    mergeAdjacentSpans(root);
+
+    normalizeStyleAttributes(root);
+
+    return template.innerHTML.trim();
   }
 
   // =========================================================
@@ -1372,7 +1725,18 @@
       }
     }
 
-    return output.join("\n");
+    /*
+     * Először elkészül a vizuálisan pontos,
+     * bőbeszédű HTML.
+     *
+     * UTÁNA takarítunk.
+     */
+
+    const rawHtml = output.join("\n");
+
+    const optimizedHtml = cleanupHtml(rawHtml);
+
+    return optimizedHtml;
   }
 
   // =========================================================
@@ -1380,8 +1744,10 @@
   // =========================================================
 
   function createPanel() {
-    if (document.getElementById(APP_ID)) {
-      document.getElementById(APP_ID).remove();
+    const existing = document.getElementById(APP_ID);
+
+    if (existing) {
+      existing.remove();
     }
 
     const panel = document.createElement("div");
@@ -1390,10 +1756,13 @@
 
     Object.assign(panel.style, {
       position: "fixed",
+
       top: "20px",
+
       right: "20px",
 
       width: "720px",
+
       maxWidth: "calc(100vw - 40px)",
 
       maxHeight: "calc(100vh - 40px)",
@@ -1432,9 +1801,7 @@
                 "
             >
                 <strong
-                    style="
-                        font-size:17px;
-                    "
+                    style="font-size:17px;"
                 >
                     DOCX → Drupal HTML
                 </strong>
@@ -1587,7 +1954,7 @@
         return;
       }
 
-      status.textContent = "Feldolgozás...";
+      status.textContent = "Feldolgozás és optimalizálás...";
 
       output.value = "";
 
@@ -1596,7 +1963,7 @@
 
         output.value = html;
 
-        status.textContent = `Kész: ${file.name}`;
+        status.textContent = `Kész és optimalizálva: ${file.name}`;
       } catch (error) {
         console.error("[DOCX → Drupal]", error);
 
