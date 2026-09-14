@@ -50,6 +50,10 @@
       hostnames: ["tk.pte.hu"],
       script: "tk/script_min.js",
     },
+    {
+      hostnames: ["hirlevel.pte.hu"],
+      script: "hirlevel/grupal.js",
+    },
   ];
 
   /*
