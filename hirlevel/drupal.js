@@ -1,9 +1,12 @@
 (async () => {
   const APP_ID = "docx-drupal-converter-panel";
   // Update this fixed timestamp when releasing a new converter version.
-  const APP_VERSION = "2026.09.15. 10:14";
+  const APP_VERSION = "2026.09.15. 15:24";
   const JSZIP_URL =
     "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";
+  const MSG_READER_URL =
+    "https://cdn.jsdelivr.net/npm/@kenjiuno/msgreader-web-ng@0.2.0-alpha1/+esm";
+  let msgReaderPromise;
 
   const FLOAT_ROW_MIN_TOLERANCE_EMU = 127000;
   const FLOAT_ROW_MAX_TOLERANCE_EMU = 381000;
@@ -4338,6 +4341,213 @@
   }
 
   // =========================================================
+  // OUTLOOK MSG
+  // =========================================================
+
+  async function ensureMsgReader() {
+    if (!msgReaderPromise) {
+      msgReaderPromise = import(MSG_READER_URL)
+        .then((module) => {
+          if (typeof module.MsgReader !== "function") {
+            throw new Error("Hiányzó MSG-olvasó.");
+          }
+          return module.MsgReader;
+        })
+        .catch(() => {
+          msgReaderPromise = null;
+          throw new Error(
+            "Az Outlook-olvasó betöltése sikertelen. Ellenőrizd az internetkapcsolatot, majd válaszd ki újra a fájlt.",
+          );
+        });
+    }
+    return msgReaderPromise;
+  }
+
+  function decodeMsgHtml(value, fields) {
+    if (typeof value === "string") return value.replace(/\0+$/, "");
+    const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+    const prefix = new TextDecoder("windows-1252").decode(bytes.subarray(0, 4096));
+    const charset = prefix.match(/<meta\b[^>]*charset\s*=\s*["']?\s*([^\s"'/>;]+)/i)?.[1];
+    const codepage = fields.internetCodepage || fields.messageCodepage;
+    const codepages = {
+      65001: "utf-8", 1200: "utf-16le", 1201: "utf-16be",
+      20127: "windows-1252", 28591: "windows-1252", 28592: "iso-8859-2",
+      932: "shift_jis", 936: "gbk", 949: "euc-kr", 950: "big5",
+    };
+    const bom = bytes[0] === 255 && bytes[1] === 254 ? "utf-16le"
+      : bytes[0] === 254 && bytes[1] === 255 ? "utf-16be"
+      : bytes[0] === 239 && bytes[1] === 187 && bytes[2] === 191 ? "utf-8" : null;
+    const encodings = [bom, charset, codepages[codepage] || (codepage ? `windows-${codepage}` : null), "utf-8", "windows-1252"];
+    for (const encoding of encodings.filter(Boolean)) {
+      try {
+        return new TextDecoder(encoding, { fatal: true }).decode(bytes).replace(/\0+$/, "");
+      } catch {
+        // Try the next declared encoding if this charset is unsupported or invalid.
+      }
+    }
+    throw new Error("A levél HTML-szövegének karakterkódolása nem olvasható.");
+  }
+
+  function normalizeEmailImageReference(value) {
+    let reference = String(value || "").trim().replace(/^cid:/i, "");
+    try { reference = decodeURIComponent(reference); } catch { /* Literal malformed URL. */ }
+    return reference.replace(/^<|>$/g, "").toLowerCase();
+  }
+
+  async function uploadEmailImages(root, reader, fields, progress, uploadImage) {
+    const attachments = fields.attachments || [];
+    const byId = new Map();
+    const byLocation = new Map();
+    const add = (map, key, attachment) => {
+      if (!key) return;
+      const normalized = normalizeEmailImageReference(key);
+      if (!map.has(normalized)) map.set(normalized, []);
+      if (!map.get(normalized).includes(attachment)) map.get(normalized).push(attachment);
+    };
+    for (const attachment of attachments) {
+      add(byId, attachment.pidContentId, attachment);
+      add(byLocation, attachment.pidContentLocation, attachment);
+      // The pinned reader exposes PidTagAttachContentLocation as a raw MAPI
+      // property, rather than a named field (Unicode and ANSI variants).
+      for (const property of attachment.rawProps || []) {
+        if (/^3713001[ef]$/i.test(String(property.propertyTag)) && typeof property.value === "string") {
+          add(byLocation, property.value, attachment);
+        }
+      }
+      add(byLocation, attachment.fileName, attachment);
+      add(byLocation, attachment.fileNameShort, attachment);
+    }
+
+    const images = new Map();
+    const replacements = [];
+    function resolveImage(value) {
+      const reference = String(value || "").trim();
+      if (!reference || reference.startsWith("#")) return null;
+      const isCid = /^cid:/i.test(reference);
+      const key = normalizeEmailImageReference(reference);
+      let matches = (isCid ? byId : byLocation).get(key);
+      if (!matches && !isCid && !/^(?:https?:)?\/\//i.test(reference)) {
+        matches = byLocation.get(key.replaceAll("\\", "/").split("/").pop());
+      }
+      if (matches?.length > 1) {
+        throw new Error(`Több csatolt képhez tartozik ugyanaz a hivatkozás: ${reference}`);
+      }
+      const attachment = matches?.[0];
+      if (attachment) {
+        if (!images.has(attachment)) {
+          const filename = (attachment.fileName || attachment.fileNameShort || "email-image.png")
+            .replaceAll("\\", "/").split("/").pop();
+          const declaredMime = String(attachment.attachMimeTag || "").toLowerCase().split(";")[0].trim();
+          const mime = declaredMime.startsWith("image/") ? declaredMime : getMimeType(filename);
+          if (!/^image\/(?:png|jpe?g|gif|webp|bmp|tiff|svg\+xml|x-icon|vnd\.microsoft\.icon)$/.test(mime)) {
+            throw new Error(`A levélben hivatkozott csatolmány nem támogatott kép: ${filename}`);
+          }
+          const content = reader.getAttachment(attachment)?.content;
+          if (!content?.byteLength) throw new Error(`A csatolt kép nem olvasható: ${filename}`);
+          images.set(attachment, { filename, blob: new Blob([content], { type: mime }) });
+        }
+        return images.get(attachment);
+      }
+      const dataImage = reference.match(/^data:(image\/(?:png|jpeg|gif|webp|bmp));base64,([\s\S]+)$/i);
+      if (dataImage) {
+        if (!images.has(reference)) {
+          let bytes;
+          try { bytes = Uint8Array.from(atob(dataImage[2].replace(/\s/g, "")), c => c.charCodeAt(0)); }
+          catch { throw new Error("A levél egyik beágyazott képe sérült."); }
+          images.set(reference, {
+            filename: `email-image-${images.size + 1}.${dataImage[1].split("/")[1]}`,
+            blob: new Blob([bytes], { type: dataImage[1].toLowerCase() }),
+          });
+        }
+        return images.get(reference);
+      }
+      if (/^(?:https?:)?\/\//i.test(reference)) return null;
+      throw new Error(`A levélben hivatkozott kép nem található a csatolmányok között: ${reference.slice(0, 160)}`);
+    }
+
+    // Resolve every reference before starting uploads, so missing attachments do
+    // not leave a partially converted newsletter in the output.
+    for (const element of [root, ...root.querySelectorAll("*")]) {
+      for (const attribute of element.tagName === "IMG" ? ["src", "background"] : ["background"]) {
+        if (!element.hasAttribute(attribute)) continue;
+        const item = resolveImage(element.getAttribute(attribute));
+        if (item) replacements.push(() => element.setAttribute(attribute, item.url));
+      }
+      // Outlook supplies an ordinary src; avoid an old srcset overriding its
+      // uploaded URL after this HTML is pasted into the newsletter editor.
+      element.removeAttribute("srcset");
+      if (!element.style) continue;
+      for (const property of [...element.style]) {
+        const value = element.style.getPropertyValue(property);
+        if (!/url\s*\(/i.test(value)) continue;
+        const urls = [];
+        const pattern = /url\(\s*(?:"([^"\n]*)"|'([^'\n]*)'|([^\s)]*))\s*\)/gi;
+        for (const match of value.matchAll(pattern)) {
+          const item = resolveImage(match[1] ?? match[2] ?? match[3]);
+          if (item) urls.push({ match: match[0], item });
+        }
+        if (urls.length) {
+          const priority = element.style.getPropertyPriority(property);
+          replacements.push(() => {
+            let updated = value;
+            for (const { match, item } of urls) {
+              updated = updated.replaceAll(match, `url("${item.url.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}")`);
+            }
+            element.style.setProperty(property, updated, priority);
+          });
+        }
+      }
+    }
+
+    let count = 0;
+    for (const item of images.values()) {
+      progress?.(`E-mail kép feltöltése ${++count}/${images.size}: ${item.filename}`);
+      item.url = await uploadImage(item.blob, item.filename);
+      if (!item.url) throw new Error(`A kép feltöltése nem adott vissza URL-t: ${item.filename}`);
+    }
+    replacements.forEach(replace => replace());
+  }
+
+  async function convertMsgToHtml(file, progress, options = {}) {
+    progress?.("Outlook-levél beolvasása...");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const signature = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+    if (!signature.every((byte, index) => bytes[index] === byte)) {
+      throw new Error("Ez nem érvényes Outlook .msg fájl. Az Outlookból Üzenet (.msg) formátumban mentsd el a levelet.");
+    }
+    const MsgReader = options.MsgReader || await ensureMsgReader();
+    let reader, fields;
+    try {
+      reader = new MsgReader(bytes);
+      reader.parserConfig = { includeRawProps: true };
+      fields = reader.getFileData();
+      if (!fields || fields.error) throw new Error("Invalid MSG");
+    } catch {
+      throw new Error("Az Outlook .msg fájl sérült vagy nem olvasható.");
+    }
+    let html = "";
+    const warnings = [];
+    for (const value of [fields.bodyHtml, fields.html]) {
+      if (!value?.length && !value?.byteLength) continue;
+      html = decodeMsgHtml(value, fields);
+      if (html.trim()) break;
+    }
+    if (!html.trim()) {
+      if (typeof fields.body !== "string" || !fields.body.trim()) {
+        throw new Error(fields.compressedRtf
+          ? "Ez a levél csak RTF-törzset tartalmaz. Mentsd el az Outlookban HTML-formátumú üzenetként, majd válaszd ki az új .msg fájlt."
+          : "A .msg fájlban nincs olvasható HTML- vagy szöveges levéltörzs.");
+      }
+      html = `<div style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(fields.body)}</div>`;
+      warnings.push("A levélhez csak egyszerű szöveg érhető el; az eredeti formázás nem állítható vissza.");
+    }
+    progress?.("A levél formázásának és képeinek feldolgozása...");
+    const root = prepareEmailHtml(html);
+    await uploadEmailImages(root, reader, fields, progress, options.uploadImage || uploadImageToDrupal);
+    return { html: root.outerHTML, warnings };
+  }
+
+  // =========================================================
   // UI
   // =========================================================
 
@@ -4396,7 +4606,7 @@
             >
                 <div>
                     <strong style="font-size:17px;">
-                        DOCX → Drupal HTML
+                        DOCX / MSG → Drupal HTML
                     </strong>
                     <small
                         data-role="version"
@@ -4429,12 +4639,12 @@
                     margin-bottom:6px;
                 "
             >
-                Word dokumentum
+                Word dokumentum vagy Outlook-levél
             </label>
 
             <input
                 type="file"
-                accept=".docx"
+                accept=".docx,.msg"
                 data-role="file"
                 style="
                     display:block;
@@ -4452,7 +4662,7 @@
                     color:#555;
                 "
             >
-                Válassz egy .docx fájlt.
+                Válassz egy .docx vagy .msg fájlt.
             </div>
 
             <div
@@ -4547,28 +4757,38 @@
         return;
       }
 
-      if (!file.name.toLowerCase().endsWith(".docx")) {
+      const extension = file.name.split(".").pop()?.toLowerCase();
+      if (!["docx", "msg"].includes(extension)) {
         output.value = "";
 
-        status.textContent = "Kérlek DOCX fájlt válassz.";
+        status.textContent = "Kérlek DOCX vagy MSG fájlt válassz.";
 
         return;
       }
 
       output.value = "";
+      fileInput.disabled = true;
+      copyButton.disabled = true;
 
       try {
-        const html = await convertDocxToHtml(file, (message) => {
+        const progress = (message) => {
           status.textContent = message;
-        });
+        };
+        const result = extension === "msg"
+          ? await convertMsgToHtml(file, progress)
+          : { html: await convertDocxToHtml(file, progress), warnings: [] };
 
-        output.value = html;
+        output.value = result.html;
 
-        status.textContent = `Kész: ${file.name}`;
+        status.textContent = [`Kész: ${file.name}`, ...result.warnings].join(" — ");
       } catch (error) {
-        console.error("[DOCX → Drupal]", error);
+        console.error("[DOCX / MSG → Drupal]", error);
 
         status.textContent = `Hiba: ${error?.message || error}`;
+      } finally {
+        fileInput.disabled = false;
+        copyButton.disabled = false;
+        fileInput.value = "";
       }
     });
   }
@@ -4580,7 +4800,7 @@
   try {
     createPanel();
   } catch (error) {
-    console.error("[DOCX → Drupal]", error);
+    console.error("[DOCX / MSG → Drupal]", error);
 
     alert(
       "A DOCX converter nem tudott elindulni:\n\n" + (error?.message || error),
