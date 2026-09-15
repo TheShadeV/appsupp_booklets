@@ -1,7 +1,7 @@
 (async () => {
   const APP_ID = "docx-drupal-converter-panel";
   // Update this fixed timestamp when releasing a new converter version.
-  const APP_VERSION = "2026.09.15. 09:35";
+  const APP_VERSION = "2026.09.15. 09:52";
   const JSZIP_URL =
     "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";
 
@@ -162,7 +162,15 @@
 
       for (const [key, value] of Object.entries(object)) {
         if (value !== undefined && value !== null) {
-          result[key] = value;
+          if (key === "tabStops") {
+            const stops = new Map((result.tabStops || []).map((stop) => [stop.position, stop]));
+            for (const stop of value) {
+              stops.set(stop.position, stop);
+            }
+            result.tabStops = [...stops.values()].sort((a, b) => a.position - b.position);
+          } else {
+            result[key] = value;
+          }
         }
       }
     }
@@ -383,6 +391,16 @@
     width -= Math.max(0, ptValueToTwips(paragraph.marginRight));
 
     return Math.max(1, width);
+  }
+
+  async function readDefaultTabStopTwips(zip) {
+    const file = zip.file("word/settings.xml");
+    if (!file) {
+      return 720;
+    }
+    const settings = parseXml(await file.async("text"));
+    const value = Number(getWordAttribute(firstDescendant(settings, "defaultTabStop"), "val"));
+    return Number.isFinite(value) && value > 0 ? value : 720;
   }
 
   // =========================================================
@@ -685,6 +703,14 @@
     const spacing = firstDirectChild(pPr, "spacing");
 
     const numPr = firstDirectChild(pPr, "numPr");
+
+    const tabs = firstDirectChild(pPr, "tabs");
+    if (tabs) {
+      result.tabStops = directChildren(tabs, "tab").map((tab) => ({
+        position: Number(getWordAttribute(tab, "pos")),
+        alignment: getWordAttribute(tab, "val") || "left",
+      })).filter((stop) => Number.isFinite(stop.position));
+    }
 
     const pageBreakBefore = firstDirectChild(pPr, "pageBreakBefore");
     if (pageBreakBefore) {
@@ -1855,6 +1881,130 @@
   // FLOATING LAYOUT
   // =========================================================
 
+  function renderInlineImageParagraph(paragraph, baseContext, paragraphState) {
+    if (getOuterParagraphPlainText(paragraph) ||
+        getTopLevelDescendants(paragraph, "anchor", "txbxContent").length ||
+        !getTopLevelDescendants(paragraph, "inline", "txbxContent").length) {
+      return null;
+    }
+
+    const context = {
+      ...baseContext,
+      currentParagraphProperties: paragraphState.paragraphProperties,
+    };
+    const tokens = [];
+    let supported = true;
+    function collect(node) {
+      const name = localName(node);
+      if (["pPr", "rPr"].includes(name)) return;
+      if (name === "AlternateContent") {
+        const selected = firstDirectChild(node, "Choice") || firstDirectChild(node, "Fallback");
+        if (selected) collect(selected);
+        return;
+      }
+      if (["drawing", "pict", "object"].includes(name)) {
+        const inline = firstDescendant(node, "inline");
+        const relationId = getDrawingRelationId(inline);
+        if (!inline || !relationId) {
+          supported = false;
+          return;
+        }
+        const dimensions = getDrawingDimensions(inline);
+        tokens.push({
+          type: "image", relationId,
+          width: dimensions.widthTwips || getEffectiveContainerWidthTwips(context),
+          alt: getDrawingAltText(inline),
+          href: getDrawingHyperlink(inline, context),
+        });
+        return;
+      }
+      if (name === "tab") {
+        tokens.push({ type: "tab" });
+        return;
+      }
+      if (name === "br" || name === "cr") {
+        if (!["page", "column"].includes(getWordAttribute(node, "type"))) {
+          tokens.push({ type: "break" });
+        }
+        return;
+      }
+      // Literal text/space widths depend on font shaping. Keep the normal
+      // text renderer for those paragraphs instead of guessing their width.
+      if (name === "t" && node.textContent) supported = false;
+      for (const child of node.children) collect(child);
+    }
+    collect(paragraph);
+    if (!supported || !tokens.some((token) => token.type === "image")) return null;
+
+    const properties = paragraphState.paragraphProperties;
+    const containerWidth = getEffectiveContainerWidthTwips(context);
+    const indent = Math.max(0, ptValueToTwips(properties.marginLeft));
+    const defaultTab = context.defaultTabStopTwips || 720;
+    const stops = (properties.tabStops || []).filter((stop) =>
+      !["clear", "bar"].includes(stop.alignment));
+    const lines = [[]];
+    for (const token of tokens) {
+      if (token.type === "break") lines.push([]);
+      else lines[lines.length - 1].push(token);
+    }
+
+    const body = lines.map((line, lineIndex) => {
+      const items = [];
+      let cursor = lineIndex === 0 ? Math.max(0, ptValueToTwips(properties.textIndent)) : 0;
+      for (let index = 0; index < line.length; index++) {
+        const token = line[index];
+        if (token.type === "image") {
+          items.push({ ...token, x: cursor });
+          cursor += token.width;
+          continue;
+        }
+        const stop = stops.find((candidate) => candidate.position > cursor + indent);
+        let followingWidth = 0;
+        for (let next = index + 1; next < line.length && line[next].type === "image"; next++) {
+          followingWidth += line[next].width;
+        }
+        const position = stop?.position ||
+          (Math.floor((cursor + indent) / defaultTab) + 1) * defaultTab;
+        const adjustment = ["right", "end", "decimal"].includes(stop?.alignment)
+          ? followingWidth : stop?.alignment === "center" ? followingWidth / 2 : 0;
+        cursor = Math.max(cursor, position - indent - adjustment);
+      }
+      if (!items.length) return "<div><br></div>";
+      if (!line.some((token) => token.type === "tab")) {
+        const offset = Math.max(0, alignedPosition(properties.textAlign, containerWidth, cursor));
+        items.forEach((item) => { item.x += offset; });
+      }
+      return renderInlineImageRow(items, containerWidth, context);
+    }).join("");
+
+    const styles = paragraphPropertiesToCss(properties);
+    delete styles["white-space"];
+    delete styles["text-indent"];
+    return `<div style="${escapeAttribute(cssString(styles))}">${body}</div>`;
+  }
+
+  function renderInlineImageRow(items, containerWidth, context) {
+    const layoutWidth = Math.max(containerWidth, ...items.map((item) => item.x + item.width));
+    const cells = [];
+    let cursor = 0;
+    const cell = (width, content = "") => {
+      const percent = round(width / layoutWidth * 100, 4);
+      if (percent <= 0) return;
+      cells.push(`<td width="${percent}%" align="center" valign="bottom" ` +
+        `style="width:${percent}%;padding:0;border:0;vertical-align:bottom;` +
+        `text-align:center;font-size:0;line-height:0;">${content}</td>`);
+    };
+    for (const item of items) {
+      cell(item.x - cursor);
+      cell(item.width, renderFloatingImageItem(item, item.x, item.x + item.width, context));
+      cursor = item.x + item.width;
+    }
+    cell(layoutWidth - cursor);
+    return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" ` +
+      `style="width:100%;border-collapse:collapse;table-layout:fixed;">` +
+      `<tbody><tr>${cells.join("")}</tr></tbody></table>`;
+  }
+
   function alignedPosition(align, available, size) {
     if (align === "center") {
       return (available - size) / 2;
@@ -2937,8 +3087,9 @@
       currentParagraphProperties: state.paragraphProperties,
     };
 
-    if (shouldRenderFloatingLayout(paragraph, floatingContext)) {
-      const html = renderFloatingParagraphLayout(paragraph, baseContext, state);
+    const inlineImageHtml = renderInlineImageParagraph(paragraph, baseContext, state);
+    if (inlineImageHtml !== null || shouldRenderFloatingLayout(paragraph, floatingContext)) {
+      const html = inlineImageHtml ?? renderFloatingParagraphLayout(paragraph, baseContext, state);
       return {
         html,
 
@@ -3776,6 +3927,8 @@
 
     const pageMetrics = readPageMetrics(documentXml);
 
+    const defaultTabStopTwips = await readDefaultTabStopTwips(zip);
+
     progress?.("Word stílusok feldolgozása...");
 
     const themeFonts = await readThemeFonts(zip);
@@ -3819,6 +3972,8 @@
       imageUrls,
 
       pageMetrics,
+
+      defaultTabStopTwips,
 
       currentContainerWidthTwips: pageMetrics.textWidthTwips,
 
