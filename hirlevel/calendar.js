@@ -4,20 +4,16 @@
   // ============================================================
   // PTE HÍRLEVÉL NAPTÁR SEGÉD
   //
-  // Funkciók:
-  //  - 15 perces drag & drop
-  //  - automatikus sending_time mentés
-  //  - hibás HTTP redirect tolerálása
-  //  - szerveroldali mentés-visszaellenőrzés
-  //  - YYYY-MM-DD HH:mm / YYYY-MM-DDTHH:mm normalizálás
-  //  - jobb klikkes menü
-  //  - Shift + bal klikk menü
-  //  - Alt + bal klikk menü
-  //  - +/- 15 perc
-  //  - +/- 1 hét
-  //  - pontos időpont megadása
-  //  - szerkesztőoldal megnyitása
-  //  - ID másolása
+  // - 15 perces drag & drop
+  // - automatikus sending_time mentés
+  // - hibás HTTP redirect tolerálása
+  // - szerveroldali visszaellenőrzés
+  // - Shift + bal klikk extra menü
+  // - +/- 15 perc
+  // - +/- 1 hét
+  // - pontos időpont megadása
+  // - szerkesztőoldal megnyitása
+  // - ID másolása
   // ============================================================
 
   // ============================================================
@@ -27,20 +23,8 @@
   const CONFIG = {
     calendarSelector: "#w0",
 
-    // Ha false, a natív jobb klikk menü megmarad,
-    // és csak Shift/Alt + bal klikk használható.
-    enableRightClickMenu: true,
-
-    // Shift + bal klikk
-    enableShiftClickMenu: true,
-
-    // Alt + bal klikk
-    enableAltClickMenu: true,
-
-    // Mentés ellenőrzési próbálkozások
     verifyAttempts: 4,
 
-    // Próbálkozások közti idő
     verifyDelayMs: 300,
   };
 
@@ -139,15 +123,13 @@
   }
 
   // ------------------------------------------------------------
-  // FONTOS JAVÍTÁS:
+  // Normalizálás:
   //
   // 2026-09-20T13:15
   // 2026-09-20 13:15
   // 2026-09-20T13:15:00
   //
-  // mind:
-  //
-  // 2026-09-20 13:15
+  // -> 2026-09-20 13:15
   // ------------------------------------------------------------
 
   function normalizeSendingTime(value) {
@@ -177,20 +159,16 @@
 
       const type = String(control.type || "").toLowerCase();
 
-      // File input:
-      // az eredeti requestben is üres mezőként szerepelhet
       if (type === "file") {
         params.append(name, "");
 
         continue;
       }
 
-      // Nem kiválasztott checkbox/radio
       if ((type === "checkbox" || type === "radio") && !control.checked) {
         continue;
       }
 
-      // Multiple select
       if (control.tagName === "SELECT" && control.multiple) {
         for (const option of control.options) {
           if (option.selected) {
@@ -240,7 +218,9 @@
 
     Object.assign(el.style, {
       position: "fixed",
+
       right: "20px",
+
       bottom: "20px",
 
       zIndex: "2147483647",
@@ -409,10 +389,8 @@
 
     const params = formToParams(form);
 
-    // Biztos rekord ID
     params.set("NewsLetters[id]", id);
 
-    // Csak a küldési időt módosítjuk
     params.set("NewsLetters[sending_time]", sendingTime);
 
     console.log(`[PTE] #${id}: mentés → ${sendingTime}`);
@@ -420,10 +398,8 @@
     // --------------------------------------------------------
     // POST
     //
-    // A szerver mentés után hibás HTTP redirectet adhat.
-    //
-    // redirect: manual miatt nem próbáljuk követni.
-    // A tényleges eredményt UTÁNA külön GET-tel ellenőrizzük.
+    // A backend mentés után hibás HTTP redirectet adhat.
+    // Ezért a tényleges eredményt külön GET-tel ellenőrizzük.
     // --------------------------------------------------------
 
     try {
@@ -454,19 +430,11 @@
         url: response.url,
       });
     } catch (error) {
-      // Ez önmagában még NEM mentési hiba.
-      //
-      // Lehet csak a HTTPS -> HTTP redirect problémája.
-
       console.warn(
         "[PTE] POST/redirect fetch hiba. " + "A mentést külön ellenőrizzük.",
         error,
       );
     }
-
-    // --------------------------------------------------------
-    // Külön ellenőrizzük a szerveren
-    // --------------------------------------------------------
 
     await sleep(CONFIG.verifyDelayMs);
 
@@ -484,7 +452,7 @@
   }
 
   // ============================================================
-  // IDŐPONT PROGRAMOZOTT ELTOLÁSA
+  // IDŐPONT ELTOLÁSA
   // ============================================================
 
   async function shiftEvent(event, amount, unit, description) {
@@ -499,12 +467,10 @@
     try {
       event.start = event.start.clone().add(amount, unit);
 
-      // Az event vizuális hosszát is megtartjuk
       if (event.end) {
         event.end = event.end.clone().add(amount, unit);
       }
 
-      // UI azonnali frissítése
       $calendar.fullCalendar("updateEvent", event);
 
       toast(`${description}\nMentés...`, "loading");
@@ -513,7 +479,6 @@
 
       toast(`✓ Mentve\n${result.sendingTime}`, "success", 3000);
     } catch (error) {
-      // Sikertelen valódi mentésnél vissza
       event.start = oldStart;
 
       event.end = oldEnd;
@@ -527,7 +492,7 @@
   }
 
   // ============================================================
-  // PONTOS IDŐPONT MEGADÁSA
+  // PONTOS IDŐPONT
   // ============================================================
 
   async function setExactTime(event) {
@@ -571,7 +536,6 @@
     if (newStart.minute() % 15 !== 0) {
       alert(
         "Az időpontnak 15 perces lépésre kell esnie.\n\n" +
-          "Engedélyezett percek:\n" +
           ":00\n:15\n:30\n:45",
       );
 
@@ -582,7 +546,6 @@
 
     const oldEnd = event.end ? event.end.clone() : null;
 
-    // Eredeti időtartam
     const durationMs = event.end ? event.end.diff(event.start) : null;
 
     try {
@@ -649,21 +612,21 @@
   }
 
   // ============================================================
-  // CONTEXT MENU LÉTREHOZÁSA
+  // EXTRA MENÜ
   // ============================================================
 
   const menu = document.createElement("div");
 
-  menu.id = "__pte_calendar_context_menu";
+  menu.id = "__pte_calendar_menu";
 
   Object.assign(menu.style, {
     display: "none",
 
     position: "fixed",
 
-    minWidth: "260px",
+    minWidth: "270px",
 
-    maxWidth: "420px",
+    maxWidth: "430px",
 
     zIndex: "2147483646",
 
@@ -688,16 +651,16 @@
 
   document.body.appendChild(menu);
 
-  let contextEvent = null;
+  let selectedEvent = null;
 
   // ============================================================
-  // MENÜ SEGÉDFÜGGVÉNYEK
+  // MENÜ SEGÉDEK
   // ============================================================
 
   function hideMenu() {
     menu.style.display = "none";
 
-    contextEvent = null;
+    selectedEvent = null;
   }
 
   function addSeparator() {
@@ -739,7 +702,7 @@
       e.preventDefault();
       e.stopPropagation();
 
-      const event = contextEvent;
+      const event = selectedEvent;
 
       hideMenu();
 
@@ -759,6 +722,10 @@
     menu.appendChild(item);
   }
 
+  // ============================================================
+  // MENÜ FELÉPÍTÉSE
+  // ============================================================
+
   function buildMenu(event) {
     menu.innerHTML = "";
 
@@ -771,7 +738,7 @@
     header.textContent = `${title} (#${id || "?"})`;
 
     Object.assign(header.style, {
-      padding: "8px 14px 10px",
+      padding: "8px 14px 5px",
 
       fontWeight: "bold",
 
@@ -781,12 +748,11 @@
 
       whiteSpace: "nowrap",
 
-      opacity: ".9",
+      opacity: ".95",
     });
 
     menu.appendChild(header);
 
-    // Aktuális idő
     const time = document.createElement("div");
 
     time.textContent = formatSendingTime(event.start);
@@ -825,25 +791,24 @@
 
     addSeparator();
 
-    makeMenuItem("🧪 Teszt / szerkesztés megnyitása", (event) => {
-      openEditor(event);
-    });
+    makeMenuItem("📝 Szerkesztés / tesztküldés oldal megnyitása", (event) =>
+      openEditor(event),
+    );
 
     makeMenuItem("📋 Hírlevél ID másolása", (event) => copyId(event));
   }
 
   // ============================================================
-  // MENÜ POZICIONÁLÁSA
+  // MENÜ MEGJELENÍTÉSE
   // ============================================================
 
   function showMenu(event, clientX, clientY) {
-    contextEvent = event;
+    selectedEvent = event;
 
     buildMenu(event);
 
     menu.style.display = "block";
 
-    // Ideiglenes pozíció
     menu.style.left = `${clientX}px`;
 
     menu.style.top = `${clientY}px`;
@@ -854,12 +819,10 @@
 
     let y = clientY;
 
-    // Jobb szélen belül tartás
     if (x + rect.width > window.innerWidth) {
       x = window.innerWidth - rect.width - 8;
     }
 
-    // Alsó szélen belül tartás
     if (y + rect.height > window.innerHeight) {
       y = window.innerHeight - rect.height - 8;
     }
@@ -870,70 +833,7 @@
   }
 
   // ============================================================
-  // JOBB KLIKK
-  //
-  // Capture phase!
-  //
-  // Ez hamarabb kapja meg az eseményt, mint az oldal legtöbb
-  // saját contextmenu handlere.
-  // ============================================================
-
-  function handleContextMenuCapture(e) {
-    if (!CONFIG.enableRightClickMenu) {
-      return;
-    }
-
-    const target = e.target.closest?.(`${CONFIG.calendarSelector} .fc-event`);
-
-    if (!target) {
-      return;
-    }
-
-    // FONTOS:
-    // a böngésző normál context menüjét tiltjuk
-    e.preventDefault();
-
-    // az oldal saját contextmenu eseményét se engedjük tovább
-    e.stopPropagation();
-
-    if (typeof e.stopImmediatePropagation === "function") {
-      e.stopImmediatePropagation();
-    }
-
-    const $target = jq(target);
-
-    const seg = $target.data("fcSeg");
-
-    const event = seg?.event;
-
-    if (!event) {
-      console.warn(
-        "[PTE] Nem sikerült az eventet kinyerni a DOM elemből.",
-        target,
-      );
-
-      toast(
-        "Nem sikerült az esemény adatait lekérni.\n" +
-          "Használd a Shift + bal klikket.",
-        "error",
-        4000,
-      );
-
-      return;
-    }
-
-    showMenu(event, e.clientX, e.clientY);
-  }
-
-  document.addEventListener("contextmenu", handleContextMenuCapture, true);
-
-  // ============================================================
-  // SHIFT / ALT + BAL KLIKK
-  //
-  // Ez a megbízhatóbb alternatíva.
-  //
-  // FullCalendar közvetlenül átadja az event objektumot,
-  // tehát nincs szükség DOM -> event visszakeresésre.
+  // SHIFT + BAL KLIKK
   // ============================================================
 
   const originalEventClick = $calendar.fullCalendar("option", "eventClick");
@@ -943,12 +843,13 @@
     "eventClick",
 
     function (event, jsEvent, view) {
-      const openWithShift = CONFIG.enableShiftClickMenu && jsEvent.shiftKey;
+      // ---------------------------------------------
+      // SHIFT + BAL KLIKK -> saját menü
+      // ---------------------------------------------
 
-      const openWithAlt = CONFIG.enableAltClickMenu && jsEvent.altKey;
-
-      if (openWithShift || openWithAlt) {
+      if (jsEvent.shiftKey) {
         jsEvent.preventDefault();
+
         jsEvent.stopPropagation();
 
         showMenu(event, jsEvent.clientX, jsEvent.clientY);
@@ -956,8 +857,11 @@
         return false;
       }
 
-      // Ha eredetileg volt eventClick handler,
-      // normál klikk esetén meghagyjuk.
+      // ---------------------------------------------
+      // Normál kattintás:
+      // eredeti oldal működése maradjon meg
+      // ---------------------------------------------
+
       if (typeof originalEventClick === "function") {
         return originalEventClick.call(this, event, jsEvent, view);
       }
@@ -994,7 +898,6 @@
 
   $calendar.fullCalendar("option", "eventStartEditable", true);
 
-  // Resize most ne módosítsa a levél időtartamát
   $calendar.fullCalendar("option", "eventDurationEditable", false);
 
   // ============================================================
@@ -1012,6 +915,7 @@
 
       console.log("[PTE] Drag:", {
         id,
+
         rawId: event.id,
 
         title: event.title,
@@ -1023,9 +927,6 @@
 
       try {
         const result = await saveEvent(event);
-
-        // FONTOS:
-        // csak valódi ellenőrzési hiba esetén revertelünk.
 
         toast(`✓ Mentve\n${result.sendingTime}`, "success", 3000);
       } catch (error) {
@@ -1083,27 +984,25 @@
     `%c✓ PTE Naptársegéd aktív
 
 Drag:
-  15 perces pontosság
+  15 perces lépések
 
 Extra menü:
-  jobb klikk
-  Shift + bal klikk
-  Alt + bal klikk
+  SHIFT + bal klikk
 
 Műveletek:
   +/- 15 perc
   +/- 1 hét
   pontos időpont
-  szerkesztés
-  ID másolás`,
+  szerkesztőoldal
+  ID másolása`,
     "color:#00a000;font-weight:bold;font-size:14px",
   );
 
   toast(
     `✓ PTE Naptársegéd aktív
 
-Drag: 15 perces lépések
-Menü: jobb klikk vagy Shift + bal klikk`,
+Mozgatás: sima drag
+Extra menü: SHIFT + bal klikk`,
     "success",
     4500,
   );
