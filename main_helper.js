@@ -53,6 +53,12 @@
     {
       hostnames: ["hirlevel.pte.hu"],
       script: "hirlevel/drupal.js",
+      path: "/news-letters/",
+    },
+    {
+      hostnames: ["hirlevel.pte.hu"],
+      script: "hirlevel/calendar.js",
+      path: "/calendar/",
     },
   ];
 
