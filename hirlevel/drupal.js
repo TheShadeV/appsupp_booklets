@@ -1,5 +1,7 @@
 (async () => {
   const APP_ID = "docx-drupal-converter-panel";
+  // Update this fixed timestamp when releasing a new converter version.
+  const APP_VERSION = "2026.09.15. 09:35";
   const JSZIP_URL =
     "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";
 
@@ -3899,13 +3901,17 @@
                     margin-bottom:14px;
                 "
             >
-                <strong
-                    style="
-                        font-size:17px;
-                    "
-                >
-                    DOCX → Drupal HTML
-                </strong>
+                <div>
+                    <strong style="font-size:17px;">
+                        DOCX → Drupal HTML
+                    </strong>
+                    <small
+                        data-role="version"
+                        style="display:block;margin-top:4px;font-size:12px;color:#666;"
+                    >
+                        Verzió: ${escapeHtml(APP_VERSION)}
+                    </small>
+                </div>
 
                 <button
                     type="button"
