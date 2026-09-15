@@ -4,38 +4,73 @@
   // ============================================================
   // PTE HÍRLEVÉL NAPTÁR SEGÉD
   //
-  // - 15 perces drag & drop
-  // - automatikus sending_time mentés
-  // - hibás HTTP redirect kezelése
-  // - szerveroldali visszaellenőrzés
-  // - jobb klikkes menü
-  // - +/- 15 perc
-  // - +/- 1 hét
-  // - kézi időpont megadás
-  // - szerkesztő / teszt oldal megnyitása
+  // Funkciók:
+  //  - 15 perces drag & drop
+  //  - automatikus sending_time mentés
+  //  - hibás HTTP redirect tolerálása
+  //  - szerveroldali mentés-visszaellenőrzés
+  //  - YYYY-MM-DD HH:mm / YYYY-MM-DDTHH:mm normalizálás
+  //  - jobb klikkes menü
+  //  - Shift + bal klikk menü
+  //  - Alt + bal klikk menü
+  //  - +/- 15 perc
+  //  - +/- 1 hét
+  //  - pontos időpont megadása
+  //  - szerkesztőoldal megnyitása
+  //  - ID másolása
+  // ============================================================
+
+  // ============================================================
+  // BEÁLLÍTÁSOK
+  // ============================================================
+
+  const CONFIG = {
+    calendarSelector: "#w0",
+
+    // Ha false, a natív jobb klikk menü megmarad,
+    // és csak Shift/Alt + bal klikk használható.
+    enableRightClickMenu: true,
+
+    // Shift + bal klikk
+    enableShiftClickMenu: true,
+
+    // Alt + bal klikk
+    enableAltClickMenu: true,
+
+    // Mentés ellenőrzési próbálkozások
+    verifyAttempts: 4,
+
+    // Próbálkozások közti idő
+    verifyDelayMs: 300,
+  };
+
+  // ============================================================
+  // JQUERY / FULLCALENDAR
   // ============================================================
 
   const jq = window.jQuery;
 
   if (!jq || !jq.fn || typeof jq.fn.fullCalendar !== "function") {
     alert("Nem található az oldal jQuery / FullCalendar példánya.");
+
     return;
   }
 
-  const CALENDAR_SELECTOR = "#w0";
-  const $calendar = jq(CALENDAR_SELECTOR);
+  const $calendar = jq(CONFIG.calendarSelector);
 
   if (!$calendar.length) {
-    alert("Nem található a #w0 naptár.");
+    alert(`Nem található a ${CONFIG.calendarSelector} naptár.`);
+
     return;
   }
 
-  // ------------------------------------------------------------
-  // Ne telepítsük kétszer ugyanazon az oldalon
-  // ------------------------------------------------------------
+  // ============================================================
+  // DUPLA FUTTATÁS VÉDELEM
+  // ============================================================
 
   if (window.__PTE_CALENDAR_TOOLS_ACTIVE__) {
     alert("A PTE naptársegéd már aktív ezen az oldalon.");
+
     return;
   }
 
@@ -50,8 +85,6 @@
   }
 
   // ------------------------------------------------------------
-  // Event ID:
-  //
   // "7629text" -> "7629"
   // ------------------------------------------------------------
 
@@ -63,6 +96,10 @@
     return match ? match[1] : null;
   }
 
+  // ------------------------------------------------------------
+  // Update URL
+  // ------------------------------------------------------------
+
   function getUpdateUrl(id) {
     return (
       "https://hirlevel.pte.hu/" +
@@ -72,9 +109,7 @@
   }
 
   // ------------------------------------------------------------
-  // FullCalendar / Moment -> szerver formátum
-  //
-  // 2026-09-16 08:15
+  // Moment -> YYYY-MM-DD HH:mm
   // ------------------------------------------------------------
 
   function formatSendingTime(value) {
@@ -104,8 +139,27 @@
   }
 
   // ------------------------------------------------------------
-  // GET form -> URLSearchParams
+  // FONTOS JAVÍTÁS:
+  //
+  // 2026-09-20T13:15
+  // 2026-09-20 13:15
+  // 2026-09-20T13:15:00
+  //
+  // mind:
+  //
+  // 2026-09-20 13:15
   // ------------------------------------------------------------
+
+  function normalizeSendingTime(value) {
+    return String(value ?? "")
+      .trim()
+      .replace("T", " ")
+      .slice(0, 16);
+  }
+
+  // ============================================================
+  // FORM -> URLSearchParams
+  // ============================================================
 
   function formToParams(form) {
     const params = new URLSearchParams();
@@ -123,17 +177,20 @@
 
       const type = String(control.type || "").toLowerCase();
 
-      // Az eredeti form requestben az üres
-      // file inputok is szerepelhetnek.
+      // File input:
+      // az eredeti requestben is üres mezőként szerepelhet
       if (type === "file") {
         params.append(name, "");
+
         continue;
       }
 
+      // Nem kiválasztott checkbox/radio
       if ((type === "checkbox" || type === "radio") && !control.checked) {
         continue;
       }
 
+      // Multiple select
       if (control.tagName === "SELECT" && control.multiple) {
         for (const option of control.options) {
           if (option.selected) {
@@ -155,10 +212,10 @@
   // ============================================================
 
   function toast(message, type = "normal", duration = 2500) {
-    const old = document.getElementById("__pte_calendar_toast");
+    const existing = document.getElementById("__pte_calendar_toast");
 
-    if (old) {
-      old.remove();
+    if (existing) {
+      existing.remove();
     }
 
     const el = document.createElement("div");
@@ -167,32 +224,55 @@
 
     el.textContent = message;
 
+    let background = "#333";
+
+    if (type === "success") {
+      background = "#218838";
+    }
+
+    if (type === "error") {
+      background = "#b52b27";
+    }
+
+    if (type === "loading") {
+      background = "#1769aa";
+    }
+
     Object.assign(el.style, {
       position: "fixed",
       right: "20px",
       bottom: "20px",
+
       zIndex: "2147483647",
-      maxWidth: "420px",
+
+      maxWidth: "430px",
+
       padding: "12px 16px",
+
       borderRadius: "8px",
+
       boxShadow: "0 4px 20px rgba(0,0,0,.35)",
+
       fontFamily: "Arial, sans-serif",
+
       fontSize: "14px",
-      lineHeight: "1.35",
+
+      lineHeight: "1.4",
+
+      whiteSpace: "pre-line",
+
       color: "#fff",
-      background:
-        type === "success" ? "#218838" : type === "error" ? "#b52b27" : "#333",
+
+      background,
     });
 
     document.body.appendChild(el);
 
-    setTimeout(() => {
-      el.remove();
-    }, duration);
+    setTimeout(() => el.remove(), duration);
   }
 
   // ============================================================
-  // SZERKESZTŐ FORM LEKÉRÉSE
+  // FORM BETÖLTÉSE
   // ============================================================
 
   async function loadNewsletterForm(id) {
@@ -200,13 +280,15 @@
 
     const response = await fetch(url, {
       method: "GET",
+
       credentials: "include",
+
       cache: "no-store",
     });
 
     if (!response.ok) {
       throw new Error(
-        `A szerkesztőoldal lekérése sikertelen. HTTP ${response.status}`,
+        "A szerkesztőoldal lekérése sikertelen. " + `HTTP ${response.status}`,
       );
     }
 
@@ -237,6 +319,78 @@
   }
 
   // ============================================================
+  // SZERVEROLDALI ELLENŐRZÉS
+  // ============================================================
+
+  async function verifySendingTime(id, expectedTime) {
+    const baseUrl = getUpdateUrl(id);
+
+    const expected = normalizeSendingTime(expectedTime);
+
+    let lastActual = null;
+
+    for (let attempt = 1; attempt <= CONFIG.verifyAttempts; attempt++) {
+      const verifyUrl = baseUrl + "&_pte_verify=" + Date.now() + "_" + attempt;
+
+      const response = await fetch(verifyUrl, {
+        method: "GET",
+
+        credentials: "include",
+
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        throw new Error(
+          "A mentés ellenőrzése sikertelen. " + `HTTP ${response.status}`,
+        );
+      }
+
+      const html = await response.text();
+
+      const doc = new DOMParser().parseFromString(html, "text/html");
+
+      const input = doc.querySelector('[name="NewsLetters[sending_time]"]');
+
+      if (!input) {
+        throw new Error(
+          "Az ellenőrzéskor nem található " + "a sending_time mező.",
+        );
+      }
+
+      const rawValue = String(input.value || "");
+
+      const actual = normalizeSendingTime(rawValue);
+
+      lastActual = actual;
+
+      console.log(`[PTE] Ellenőrzés ${attempt}/${CONFIG.verifyAttempts}:`, {
+        id,
+        expected,
+        actual,
+        rawServerValue: rawValue,
+      });
+
+      if (actual === expected) {
+        return {
+          success: true,
+          actual,
+        };
+      }
+
+      if (attempt < CONFIG.verifyAttempts) {
+        await sleep(CONFIG.verifyDelayMs);
+      }
+    }
+
+    throw new Error(
+      "A szerveren nem az új időpont szerepel.\n\n" +
+        `Kért időpont: ${expected}\n` +
+        `Szerver: ${lastActual ?? "ismeretlen"}`,
+    );
+  }
+
+  // ============================================================
   // MENTÉS
   // ============================================================
 
@@ -247,18 +401,18 @@
       throw new Error(`Nem sikerült ID-t kinyerni ebből: ${event?.id}`);
     }
 
-    const sendingTime = formatSendingTime(event.start);
+    const sendingTime = normalizeSendingTime(formatSendingTime(event.start));
 
-    console.log(`[PTE] #${id}: form lekérése...`);
+    console.log(`[PTE] #${id}: szerkesztő form lekérése...`);
 
     const { url, form } = await loadNewsletterForm(id);
 
     const params = formToParams(form);
 
-    // Mindig biztosítsuk a rekord ID-ját.
+    // Biztos rekord ID
     params.set("NewsLetters[id]", id);
 
-    // CSAK az időpontot írjuk át.
+    // Csak a küldési időt módosítjuk
     params.set("NewsLetters[sending_time]", sendingTime);
 
     console.log(`[PTE] #${id}: mentés → ${sendingTime}`);
@@ -266,15 +420,14 @@
     // --------------------------------------------------------
     // POST
     //
-    // A backend nálatok a mentés után valószínűleg
-    // http://... címre redirectel.
+    // A szerver mentés után hibás HTTP redirectet adhat.
     //
-    // Ez HTTPS oldalról Mixed Content miatt elbukhat,
-    // miközben maga a mentés már megtörtént.
+    // redirect: manual miatt nem próbáljuk követni.
+    // A tényleges eredményt UTÁNA külön GET-tel ellenőrizzük.
     // --------------------------------------------------------
 
     try {
-      const postResponse = await fetch(url, {
+      const response = await fetch(url, {
         method: "POST",
 
         credentials: "include",
@@ -292,80 +445,36 @@
       });
 
       console.log("[PTE] POST válasz:", {
-        status: postResponse.status,
+        status: response.status,
 
-        type: postResponse.type,
+        type: response.type,
 
-        redirected: postResponse.redirected,
+        redirected: response.redirected,
 
-        url: postResponse.url,
+        url: response.url,
       });
     } catch (error) {
-      // Nálatok ez lehet pusztán a hibás
-      // HTTP redirect következménye.
+      // Ez önmagában még NEM mentési hiba.
+      //
+      // Lehet csak a HTTPS -> HTTP redirect problémája.
+
       console.warn(
-        "[PTE] POST/redirect hiba. " + "A mentést külön ellenőrizzük.",
+        "[PTE] POST/redirect fetch hiba. " + "A mentést külön ellenőrizzük.",
         error,
       );
     }
 
     // --------------------------------------------------------
-    // Kis várakozás az adatbázis frissülésére
+    // Külön ellenőrizzük a szerveren
     // --------------------------------------------------------
 
-    await sleep(300);
+    await sleep(CONFIG.verifyDelayMs);
 
-    // --------------------------------------------------------
-    // ELLENŐRZÉS
-    //
-    // Újra lekérjük HTTPS-en ugyanazt a rekordot.
-    // --------------------------------------------------------
-
-    const verifyUrl = url + "&_pte_verify=" + Date.now();
-
-    const verifyResponse = await fetch(verifyUrl, {
-      method: "GET",
-      credentials: "include",
-      cache: "no-store",
-    });
-
-    if (!verifyResponse.ok) {
-      throw new Error(
-        `A mentés ellenőrzése sikertelen. HTTP ${verifyResponse.status}`,
-      );
-    }
-
-    const verifyHtml = await verifyResponse.text();
-
-    const verifyDoc = new DOMParser().parseFromString(verifyHtml, "text/html");
-
-    const savedInput = verifyDoc.querySelector(
-      '[name="NewsLetters[sending_time]"]',
-    );
-
-    if (!savedInput) {
-      throw new Error("Az ellenőrzéskor nem található a sending_time mező.");
-    }
-
-    const actual = String(savedInput.value || "").trim();
-
-    console.log("[PTE] Ellenőrzés:", {
-      id,
-      wanted: sendingTime,
-      actual,
-    });
-
-    if (actual !== sendingTime) {
-      throw new Error(
-        "A szerveren nem az új időpont szerepel.\n\n" +
-          `Kért időpont: ${sendingTime}\n` +
-          `Szerver: ${actual}`,
-      );
-    }
+    await verifySendingTime(id, sendingTime);
 
     console.log(
       `%c✓ #${id} mentve: ${sendingTime}`,
-      "color:green;font-weight:bold",
+      "color:#00a000;font-weight:bold",
     );
 
     return {
@@ -375,7 +484,7 @@
   }
 
   // ============================================================
-  // PROGRAMOZOTT ÁTHELYEZÉS
+  // IDŐPONT PROGRAMOZOTT ELTOLÁSA
   // ============================================================
 
   async function shiftEvent(event, amount, unit, description) {
@@ -383,38 +492,28 @@
       return;
     }
 
-    const oldStart = event.start.clone ? event.start.clone() : event.start;
+    const oldStart = event.start.clone();
 
-    const oldEnd = event.end
-      ? event.end.clone
-        ? event.end.clone()
-        : event.end
-      : null;
+    const oldEnd = event.end ? event.end.clone() : null;
 
     try {
-      // Start mozgatása
-      if (typeof event.start.add === "function") {
-        event.start = event.start.clone().add(amount, unit);
-      } else {
-        throw new Error("Az esemény kezdési ideje nem Moment objektum.");
-      }
+      event.start = event.start.clone().add(amount, unit);
 
-      // Endet ugyanannyival toljuk,
-      // hogy a vizuális hossz megmaradjon.
-      if (event.end && typeof event.end.add === "function") {
+      // Az event vizuális hosszát is megtartjuk
+      if (event.end) {
         event.end = event.end.clone().add(amount, unit);
       }
 
-      // Azonnali UI frissítés
+      // UI azonnali frissítése
       $calendar.fullCalendar("updateEvent", event);
 
-      toast(`${description}: mentés...`);
+      toast(`${description}\nMentés...`, "loading");
 
       const result = await saveEvent(event);
 
-      toast(`✓ Mentve: ${result.sendingTime}`, "success");
+      toast(`✓ Mentve\n${result.sendingTime}`, "success", 3000);
     } catch (error) {
-      // Visszaállítás
+      // Sikertelen valódi mentésnél vissza
       event.start = oldStart;
 
       event.end = oldEnd;
@@ -423,19 +522,21 @@
 
       console.error("[PTE] Áthelyezési hiba:", error);
 
-      toast("Mentési hiba: " + error.message, "error", 5000);
+      toast("Mentési hiba.\n" + error.message, "error", 6000);
     }
   }
 
   // ============================================================
-  // KÉZI IDŐPONT MEGADÁS
+  // PONTOS IDŐPONT MEGADÁSA
   // ============================================================
 
   async function setExactTime(event) {
     const current = formatSendingTime(event.start);
 
     const input = prompt(
-      "Új időpont:\n\n" + "Formátum: YYYY-MM-DD HH:mm",
+      "Új időpont:\n\n" +
+        "Formátum: YYYY-MM-DD HH:mm\n\n" +
+        "Csak :00, :15, :30 vagy :45 perc használható.",
       current,
     );
 
@@ -447,6 +548,7 @@
 
     if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(value)) {
       alert("Hibás formátum.\n\n" + "Példa:\n" + "2026-09-22 08:15");
+
       return;
     }
 
@@ -454,6 +556,7 @@
 
     if (typeof momentLib !== "function") {
       alert("A Moment.js nem található.");
+
       return;
     }
 
@@ -461,15 +564,17 @@
 
     if (!newStart.isValid()) {
       alert("Érvénytelen dátum vagy idő.");
+
       return;
     }
 
-    // 15 perces kényszer
     if (newStart.minute() % 15 !== 0) {
       alert(
         "Az időpontnak 15 perces lépésre kell esnie.\n\n" +
-          "Pl. :00, :15, :30 vagy :45",
+          "Engedélyezett percek:\n" +
+          ":00\n:15\n:30\n:45",
       );
+
       return;
     }
 
@@ -489,11 +594,11 @@
 
       $calendar.fullCalendar("updateEvent", event);
 
-      toast("Új időpont mentése...");
+      toast("Új időpont mentése...", "loading");
 
       const result = await saveEvent(event);
 
-      toast(`✓ Mentve: ${result.sendingTime}`, "success");
+      toast(`✓ Mentve\n${result.sendingTime}`, "success", 3000);
     } catch (error) {
       event.start = oldStart;
 
@@ -501,12 +606,14 @@
 
       $calendar.fullCalendar("updateEvent", event);
 
-      toast("Mentési hiba: " + error.message, "error", 5000);
+      console.error("[PTE] Pontos időpont mentési hiba:", error);
+
+      toast("Mentési hiba.\n" + error.message, "error", 6000);
     }
   }
 
   // ============================================================
-  // SZERKESZTŐ / TESZT OLDAL
+  // SZERKESZTŐOLDAL
   // ============================================================
 
   function openEditor(event) {
@@ -514,21 +621,15 @@
 
     if (!id) {
       alert("Nem található a hírlevél ID.");
+
       return;
     }
 
-    const url = getUpdateUrl(id);
-
-    window.open(url, "_blank");
-
-    toast(
-      "A hírlevél szerkesztőoldala megnyílt. " +
-        "Innen jelenleg a normál tesztküldés használható.",
-    );
+    window.open(getUpdateUrl(id), "_blank");
   }
 
   // ============================================================
-  // ID MÁSOLÁS
+  // ID MÁSOLÁSA
   // ============================================================
 
   async function copyId(event) {
@@ -541,14 +642,14 @@
     try {
       await navigator.clipboard.writeText(id);
 
-      toast(`ID másolva: ${id}`, "success");
+      toast(`✓ ID másolva: ${id}`, "success");
     } catch (_) {
       prompt("Hírlevél ID:", id);
     }
   }
 
   // ============================================================
-  // JOBB KLIKK MENÜ
+  // CONTEXT MENU LÉTREHOZÁSA
   // ============================================================
 
   const menu = document.createElement("div");
@@ -557,17 +658,31 @@
 
   Object.assign(menu.style, {
     display: "none",
+
     position: "fixed",
-    minWidth: "240px",
+
+    minWidth: "260px",
+
+    maxWidth: "420px",
+
     zIndex: "2147483646",
+
     background: "#20272b",
+
     color: "#fff",
-    border: "1px solid rgba(255,255,255,.15)",
-    borderRadius: "7px",
-    boxShadow: "0 8px 30px rgba(0,0,0,.45)",
+
+    border: "1px solid rgba(255,255,255,.18)",
+
+    borderRadius: "8px",
+
+    boxShadow: "0 8px 30px rgba(0,0,0,.5)",
+
     padding: "6px 0",
+
     fontFamily: "Arial, sans-serif",
+
     fontSize: "14px",
+
     userSelect: "none",
   });
 
@@ -575,22 +690,41 @@
 
   let contextEvent = null;
 
+  // ============================================================
+  // MENÜ SEGÉDFÜGGVÉNYEK
+  // ============================================================
+
   function hideMenu() {
     menu.style.display = "none";
 
     contextEvent = null;
   }
 
-  function makeMenuItem(label, action, extraStyle = {}) {
+  function addSeparator() {
+    const separator = document.createElement("div");
+
+    Object.assign(separator.style, {
+      height: "1px",
+
+      margin: "5px 0",
+
+      background: "rgba(255,255,255,.15)",
+    });
+
+    menu.appendChild(separator);
+  }
+
+  function makeMenuItem(label, action) {
     const item = document.createElement("div");
 
     item.textContent = label;
 
     Object.assign(item.style, {
       padding: "9px 14px",
+
       cursor: "pointer",
+
       whiteSpace: "nowrap",
-      ...extraStyle,
     });
 
     item.addEventListener("mouseenter", () => {
@@ -616,25 +750,13 @@
       try {
         await action(event);
       } catch (error) {
-        console.error(error);
+        console.error("[PTE] Menü művelet hiba:", error);
 
         toast(error.message, "error", 5000);
       }
     });
 
     menu.appendChild(item);
-  }
-
-  function addSeparator() {
-    const sep = document.createElement("div");
-
-    Object.assign(sep.style, {
-      height: "1px",
-      margin: "5px 0",
-      background: "rgba(255,255,255,.15)",
-    });
-
-    menu.appendChild(sep);
   }
 
   function buildMenu(event) {
@@ -646,27 +768,46 @@
 
     const header = document.createElement("div");
 
-    header.textContent = `${title}  (#${id || "?"})`;
+    header.textContent = `${title} (#${id || "?"})`;
 
     Object.assign(header.style, {
-      padding: "7px 14px 9px",
-      maxWidth: "380px",
+      padding: "8px 14px 10px",
+
       fontWeight: "bold",
+
       overflow: "hidden",
+
       textOverflow: "ellipsis",
+
       whiteSpace: "nowrap",
-      opacity: ".85",
+
+      opacity: ".9",
     });
 
     menu.appendChild(header);
 
+    // Aktuális idő
+    const time = document.createElement("div");
+
+    time.textContent = formatSendingTime(event.start);
+
+    Object.assign(time.style, {
+      padding: "0 14px 8px",
+
+      fontSize: "12px",
+
+      opacity: ".65",
+    });
+
+    menu.appendChild(time);
+
     addSeparator();
 
-    makeMenuItem("➕ 15 perccel később", (event) =>
+    makeMenuItem("＋ 15 perccel később", (event) =>
       shiftEvent(event, 15, "minutes", "+15 perc"),
     );
 
-    makeMenuItem("➖ 15 perccel korábban", (event) =>
+    makeMenuItem("− 15 perccel korábban", (event) =>
       shiftEvent(event, -15, "minutes", "-15 perc"),
     );
 
@@ -680,7 +821,7 @@
       shiftEvent(event, -1, "week", "-1 hét"),
     );
 
-    makeMenuItem("🕒 Időpont megadása…", (event) => setExactTime(event));
+    makeMenuItem("🕒 Pontos időpont megadása…", (event) => setExactTime(event));
 
     addSeparator();
 
@@ -691,81 +832,160 @@
     makeMenuItem("📋 Hírlevél ID másolása", (event) => copyId(event));
   }
 
-  function getEventFromElement(element) {
-    const $event = jq(element).closest(".fc-event");
+  // ============================================================
+  // MENÜ POZICIONÁLÁSA
+  // ============================================================
 
-    if (!$event.length) {
-      return null;
+  function showMenu(event, clientX, clientY) {
+    contextEvent = event;
+
+    buildMenu(event);
+
+    menu.style.display = "block";
+
+    // Ideiglenes pozíció
+    menu.style.left = `${clientX}px`;
+
+    menu.style.top = `${clientY}px`;
+
+    const rect = menu.getBoundingClientRect();
+
+    let x = clientX;
+
+    let y = clientY;
+
+    // Jobb szélen belül tartás
+    if (x + rect.width > window.innerWidth) {
+      x = window.innerWidth - rect.width - 8;
     }
 
-    // FullCalendar 3.x
-    const seg = $event.data("fcSeg");
-
-    if (seg && seg.event) {
-      return seg.event;
+    // Alsó szélen belül tartás
+    if (y + rect.height > window.innerHeight) {
+      y = window.innerHeight - rect.height - 8;
     }
 
-    return null;
+    menu.style.left = `${Math.max(8, x)}px`;
+
+    menu.style.top = `${Math.max(8, y)}px`;
   }
 
-  jq(document).on(
-    "contextmenu.__pteCalendarTools",
-    `${CALENDAR_SELECTOR} .fc-event`,
-    function (e) {
-      const event = getEventFromElement(this);
+  // ============================================================
+  // JOBB KLIKK
+  //
+  // Capture phase!
+  //
+  // Ez hamarabb kapja meg az eseményt, mint az oldal legtöbb
+  // saját contextmenu handlere.
+  // ============================================================
 
-      if (!event) {
-        return;
+  function handleContextMenuCapture(e) {
+    if (!CONFIG.enableRightClickMenu) {
+      return;
+    }
+
+    const target = e.target.closest?.(`${CONFIG.calendarSelector} .fc-event`);
+
+    if (!target) {
+      return;
+    }
+
+    // FONTOS:
+    // a böngésző normál context menüjét tiltjuk
+    e.preventDefault();
+
+    // az oldal saját contextmenu eseményét se engedjük tovább
+    e.stopPropagation();
+
+    if (typeof e.stopImmediatePropagation === "function") {
+      e.stopImmediatePropagation();
+    }
+
+    const $target = jq(target);
+
+    const seg = $target.data("fcSeg");
+
+    const event = seg?.event;
+
+    if (!event) {
+      console.warn(
+        "[PTE] Nem sikerült az eventet kinyerni a DOM elemből.",
+        target,
+      );
+
+      toast(
+        "Nem sikerült az esemény adatait lekérni.\n" +
+          "Használd a Shift + bal klikket.",
+        "error",
+        4000,
+      );
+
+      return;
+    }
+
+    showMenu(event, e.clientX, e.clientY);
+  }
+
+  document.addEventListener("contextmenu", handleContextMenuCapture, true);
+
+  // ============================================================
+  // SHIFT / ALT + BAL KLIKK
+  //
+  // Ez a megbízhatóbb alternatíva.
+  //
+  // FullCalendar közvetlenül átadja az event objektumot,
+  // tehát nincs szükség DOM -> event visszakeresésre.
+  // ============================================================
+
+  const originalEventClick = $calendar.fullCalendar("option", "eventClick");
+
+  $calendar.fullCalendar(
+    "option",
+    "eventClick",
+
+    function (event, jsEvent, view) {
+      const openWithShift = CONFIG.enableShiftClickMenu && jsEvent.shiftKey;
+
+      const openWithAlt = CONFIG.enableAltClickMenu && jsEvent.altKey;
+
+      if (openWithShift || openWithAlt) {
+        jsEvent.preventDefault();
+        jsEvent.stopPropagation();
+
+        showMenu(event, jsEvent.clientX, jsEvent.clientY);
+
+        return false;
       }
 
-      e.preventDefault();
-      e.stopPropagation();
-
-      contextEvent = event;
-
-      buildMenu(event);
-
-      menu.style.display = "block";
-
-      // Első pozíció
-      menu.style.left = e.clientX + "px";
-
-      menu.style.top = e.clientY + "px";
-
-      // Képernyőn belül tartjuk
-      const rect = menu.getBoundingClientRect();
-
-      let x = e.clientX;
-
-      let y = e.clientY;
-
-      if (x + rect.width > window.innerWidth) {
-        x = window.innerWidth - rect.width - 8;
+      // Ha eredetileg volt eventClick handler,
+      // normál klikk esetén meghagyjuk.
+      if (typeof originalEventClick === "function") {
+        return originalEventClick.call(this, event, jsEvent, view);
       }
-
-      if (y + rect.height > window.innerHeight) {
-        y = window.innerHeight - rect.height - 8;
-      }
-
-      menu.style.left = Math.max(8, x) + "px";
-
-      menu.style.top = Math.max(8, y) + "px";
     },
   );
 
-  jq(document).on("mousedown.__pteCalendarTools", function (e) {
-    if (!menu.contains(e.target)) {
-      hideMenu();
-    }
-  });
+  // ============================================================
+  // MENÜ BEZÁRÁSA
+  // ============================================================
 
-  jq(window).on(
-    "blur.__pteCalendarTools resize.__pteCalendarTools scroll.__pteCalendarTools",
-    hideMenu,
+  document.addEventListener(
+    "mousedown",
+    (e) => {
+      if (!menu.contains(e.target)) {
+        hideMenu();
+      }
+    },
+    true,
   );
 
+  window.addEventListener("blur", hideMenu);
+
+  window.addEventListener("resize", hideMenu);
+
+  window.addEventListener("scroll", hideMenu, true);
+
   // ============================================================
-  // FULLCALENDAR BEÁLLÍTÁS
+  // FULLCALENDAR BEÁLLÍTÁSOK
   // ============================================================
 
   $calendar.fullCalendar("option", "snapDuration", "00:15:00");
@@ -774,7 +994,7 @@
 
   $calendar.fullCalendar("option", "eventStartEditable", true);
 
-  // Az event hosszát nem akarjuk egérrel módosítani.
+  // Resize most ne módosítsa a levél időtartamát
   $calendar.fullCalendar("option", "eventDurationEditable", false);
 
   // ============================================================
@@ -793,19 +1013,21 @@
       console.log("[PTE] Drag:", {
         id,
         rawId: event.id,
+
         title: event.title,
+
         newTime,
       });
 
-      toast(`Mentés: ${newTime}...`);
+      toast(`Mentés...\n${newTime}`, "loading");
 
       try {
         const result = await saveEvent(event);
 
         // FONTOS:
-        // itt már NEM revertelünk a hibás redirect miatt,
-        // mert saveEvent külön ellenőrzi a szerveren.
-        toast(`✓ Mentve: ${result.sendingTime}`, "success");
+        // csak valódi ellenőrzési hiba esetén revertelünk.
+
+        toast(`✓ Mentve\n${result.sendingTime}`, "success", 3000);
       } catch (error) {
         console.error("[PTE] Valódi mentési hiba:", error);
 
@@ -814,11 +1036,12 @@
         }
 
         toast(
-          "Nem sikerült elmenteni. " +
-            "Az esemény vissza lett helyezve.\n" +
-            error.message,
+          "Nem sikerült elmenteni.\n\n" +
+            error.message +
+            "\n\n" +
+            "Az esemény vissza lett helyezve.",
           "error",
-          6000,
+          7000,
         );
       }
     },
@@ -840,6 +1063,10 @@
 
   $calendar.fullCalendar("rerenderEvents");
 
+  // ============================================================
+  // DIAGNOSZTIKA
+  // ============================================================
+
   console.table(
     events.map((event) => ({
       rawId: event.id,
@@ -854,13 +1081,30 @@
 
   console.log(
     `%c✓ PTE Naptársegéd aktív
-- 15 perces drag
-- automatikus mentés
-- jobb klikk menü
-- +/- 1 hét
-- kézi időpont`,
+
+Drag:
+  15 perces pontosság
+
+Extra menü:
+  jobb klikk
+  Shift + bal klikk
+  Alt + bal klikk
+
+Műveletek:
+  +/- 15 perc
+  +/- 1 hét
+  pontos időpont
+  szerkesztés
+  ID másolás`,
     "color:#00a000;font-weight:bold;font-size:14px",
   );
 
-  toast(`✓ PTE Naptársegéd aktív (${events.length} esemény)`, "success", 3500);
+  toast(
+    `✓ PTE Naptársegéd aktív
+
+Drag: 15 perces lépések
+Menü: jobb klikk vagy Shift + bal klikk`,
+    "success",
+    4500,
+  );
 })();
