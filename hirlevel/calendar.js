@@ -4,25 +4,24 @@
   // ============================================================
   // PTE HÍRLEVÉL NAPTÁR SEGÉD
   //
-  // FUNKCIÓK
-  // ------------------------------------------------------------
   // ✓ 15 perces drag & drop
   // ✓ automatikus sending_time mentés
-  // ✓ HTTP redirect hiba tolerálása
-  // ✓ szerveroldali mentés-visszaellenőrzés
-  // ✓ Shift + bal klikk extra menü
+  // ✓ redirect hiba tolerálása
+  // ✓ szerveroldali visszaellenőrzés
+  // ✓ Shift + bal klikk menü
   // ✓ +/- 15 perc
   // ✓ +/- 1 hét
   // ✓ pontos időpont megadása
   // ✓ teszt levél küldése
-  // ✓ szerkesztés megnyitása
-  // ✓ ID másolása
-  // ✓ automatikus naptármagasság
+  // ✓ szerkesztés
+  // ✓ ID másolás
+  // ✓ dinamikus naptármagasság
+  // ✓ dinamikusan széthúzott 0–24 órás rács
   // ✓ resize / zoom / sidebar kezelés
   // ============================================================
 
   // ============================================================
-  // BEÁLLÍTÁSOK
+  // CONFIG
   // ============================================================
 
   const CONFIG = {
@@ -33,9 +32,12 @@
 
     bottomGap: 8,
 
-    // Kisebb képernyőn ez alatt már inkább
-    // a naptár saját scrollját használjuk.
+    // A teljes FullCalendar minimum magassága
     minCalendarHeight: 380,
+
+    // Egy félórás sor ennél ne legyen alacsonyabb.
+    // Kis ablaknál inkább scrollozunk.
+    minHalfHourRowHeight: 18,
   };
 
   // ============================================================
@@ -59,13 +61,12 @@
   }
 
   // ============================================================
-  // DUPLA FUTTATÁS VÉDELEM
+  // DUPLA FUTTATÁS ELLEN
   // ============================================================
 
   if (window.__PTE_CALENDAR_TOOLS_ACTIVE__) {
     alert(
-      "A PTE naptársegéd már aktív.\n\n" +
-        "Ha újra szeretnéd indítani, nyomj F5-öt.",
+      "A PTE naptársegéd már aktív.\n\n" + "Újraindításhoz előbb nyomj F5-öt.",
     );
 
     return;
@@ -74,17 +75,14 @@
   window.__PTE_CALENDAR_TOOLS_ACTIVE__ = true;
 
   // ============================================================
-  // SEGÉDFÜGGVÉNYEK
+  // SEGÉDEK
   // ============================================================
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  // ------------------------------------------------------------
   // "7629text" -> "7629"
-  // ------------------------------------------------------------
-
   function getNewsletterId(event) {
     const raw = String(event?.id ?? "");
 
@@ -92,10 +90,6 @@
 
     return match ? match[1] : null;
   }
-
-  // ------------------------------------------------------------
-  // Szerkesztés URL
-  // ------------------------------------------------------------
 
   function getUpdateUrl(id) {
     return (
@@ -105,10 +99,6 @@
     );
   }
 
-  // ------------------------------------------------------------
-  // Tesztküldés URL
-  // ------------------------------------------------------------
-
   function getTestUrl(id) {
     return (
       "https://hirlevel.pte.hu/" +
@@ -116,10 +106,6 @@
       encodeURIComponent(id)
     );
   }
-
-  // ------------------------------------------------------------
-  // Moment -> YYYY-MM-DD HH:mm
-  // ------------------------------------------------------------
 
   function formatSendingTime(value) {
     if (!value) {
@@ -146,18 +132,6 @@
       pad(d.getMinutes())
     );
   }
-
-  // ------------------------------------------------------------
-  // Időpont normalizálás
-  //
-  // 2026-09-20T13:15
-  // 2026-09-20 13:15
-  // 2026-09-20T13:15:00
-  //
-  // mind ->
-  //
-  // 2026-09-20 13:15
-  // ------------------------------------------------------------
 
   function normalizeSendingTime(value) {
     return String(value ?? "")
@@ -186,19 +160,16 @@
 
       const type = String(control.type || "").toLowerCase();
 
-      // File inputok
       if (type === "file") {
         params.append(name, "");
 
         continue;
       }
 
-      // Nem kiválasztott checkbox / radio
       if ((type === "checkbox" || type === "radio") && !control.checked) {
         continue;
       }
 
-      // Multiple select
       if (control.tagName === "SELECT" && control.multiple) {
         for (const option of control.options) {
           if (option.selected) {
@@ -367,7 +338,9 @@
       const input = doc.querySelector('[name="NewsLetters[sending_time]"]');
 
       if (!input) {
-        throw new Error("Az ellenőrzéskor nem található a sending_time mező.");
+        throw new Error(
+          "Az ellenőrzéskor nem található " + "a sending_time mező.",
+        );
       }
 
       const rawValue = String(input.value || "");
@@ -404,7 +377,7 @@
   }
 
   // ============================================================
-  // HÍRLEVÉL IDŐPONT MENTÉSE
+  // IDŐPONT MENTÉS
   // ============================================================
 
   async function saveEvent(event) {
@@ -424,21 +397,12 @@
 
     params.set("NewsLetters[id]", id);
 
-    // Csak ezt változtatjuk.
     params.set("NewsLetters[sending_time]", sendingTime);
 
     console.log(`[PTE] #${id}: mentés → ${sendingTime}`);
 
-    // --------------------------------------------------------
-    // POST
-    //
-    // A backend mentés után HTTP URL-re redirectelhet,
-    // amit HTTPS oldalról a böngésző blokkol.
-    //
-    // Ettől a mentés még megtörténik.
-    // Ezért külön GET-tel ellenőrizzük.
-    // --------------------------------------------------------
-
+    // A szerver a sikeres mentés után HTTP-re
+    // redirectelhet. Maga a mentés ettől még sikeres.
     try {
       const response = await fetch(url, {
         method: "POST",
@@ -468,7 +432,7 @@
       });
     } catch (error) {
       console.warn(
-        "[PTE] POST / redirect hiba. " +
+        "[PTE] POST/redirect hiba. " +
           "A tényleges mentést külön ellenőrizzük.",
         error,
       );
@@ -490,7 +454,7 @@
   }
 
   // ============================================================
-  // IDŐPONT ELTOLÁSA
+  // +/- IDŐPONT
   // ============================================================
 
   async function shiftEvent(event, amount, unit, description) {
@@ -505,7 +469,6 @@
     try {
       event.start = event.start.clone().add(amount, unit);
 
-      // Az esemény vizuális hosszát is megtartjuk.
       if (event.end) {
         event.end = event.end.clone().add(amount, unit);
       }
@@ -556,15 +519,13 @@
       return;
     }
 
-    const momentLib = window.moment;
-
-    if (typeof momentLib !== "function") {
+    if (typeof window.moment !== "function") {
       alert("A Moment.js nem található.");
 
       return;
     }
 
-    const newStart = momentLib(value, "YYYY-MM-DD HH:mm", true);
+    const newStart = window.moment(value, "YYYY-MM-DD HH:mm", true);
 
     if (!newStart.isValid()) {
       alert("Érvénytelen dátum vagy idő.");
@@ -615,7 +576,7 @@
   }
 
   // ============================================================
-  // TESZT LEVÉL KÜLDÉSE
+  // TESZT LEVÉL
   // ============================================================
 
   async function sendTestNewsletter(event) {
@@ -669,7 +630,6 @@
         url: response.url,
       });
 
-      // Normál válasz vagy manual redirect.
       if (
         response.ok ||
         response.type === "opaqueredirect" ||
@@ -683,13 +643,7 @@
 
       throw new Error(`HTTP ${response.status}`);
     } catch (error) {
-      console.warn("[PTE] Tesztküldés / redirect hiba:", error);
-
-      // Ugyanaz a helyzet előfordulhat, mint a mentésnél:
-      // a GET lefut, majd a redirect blokkolódik.
-      //
-      // Itt nincs egyszerű szerveres mező, amivel biztosan
-      // vissza tudjuk ellenőrizni, hogy az email elküldődött-e.
+      console.warn("[PTE] Tesztküldés/redirect hiba:", error);
 
       toast(
         "A tesztküldési kérés elindult, " +
@@ -718,7 +672,7 @@
   }
 
   // ============================================================
-  // ID MÁSOLÁS
+  // ID MÁSOLÁSA
   // ============================================================
 
   async function copyId(event) {
@@ -738,7 +692,7 @@
   }
 
   // ============================================================
-  // EXTRA MENÜ
+  // SHIFT MENÜ
   // ============================================================
 
   const menu = document.createElement("div");
@@ -779,10 +733,6 @@
 
   let selectedEvent = null;
 
-  // ============================================================
-  // MENÜ SEGÉDEK
-  // ============================================================
-
   function hideMenu() {
     menu.style.display = "none";
 
@@ -803,7 +753,7 @@
     menu.appendChild(separator);
   }
 
-  function makeMenuItem(label, action, options = {}) {
+  function makeMenuItem(label, action) {
     const item = document.createElement("div");
 
     item.textContent = label;
@@ -814,8 +764,6 @@
       cursor: "pointer",
 
       whiteSpace: "nowrap",
-
-      color: options.color || "#fff",
     });
 
     item.addEventListener("mouseenter", () => {
@@ -850,20 +798,12 @@
     menu.appendChild(item);
   }
 
-  // ============================================================
-  // MENÜ FELÉPÍTÉSE
-  // ============================================================
-
   function buildMenu(event) {
     menu.innerHTML = "";
 
     const id = getNewsletterId(event);
 
     const title = String(event.title || "Hírlevél");
-
-    // --------------------------------------------------------
-    // Fejléc
-    // --------------------------------------------------------
 
     const header = document.createElement("div");
 
@@ -879,15 +819,9 @@
       textOverflow: "ellipsis",
 
       whiteSpace: "nowrap",
-
-      opacity: ".95",
     });
 
     menu.appendChild(header);
-
-    // --------------------------------------------------------
-    // Aktuális időpont
-    // --------------------------------------------------------
 
     const time = document.createElement("div");
 
@@ -903,74 +837,40 @@
 
     menu.appendChild(time);
 
-    // --------------------------------------------------------
-    // Mozgatás
-    // --------------------------------------------------------
-
     addSeparator();
 
-    makeMenuItem(
-      "＋ 15 perccel később",
-
-      (event) => shiftEvent(event, 15, "minutes", "+15 perc"),
+    makeMenuItem("＋ 15 perccel később", (event) =>
+      shiftEvent(event, 15, "minutes", "+15 perc"),
     );
 
-    makeMenuItem(
-      "− 15 perccel korábban",
-
-      (event) => shiftEvent(event, -15, "minutes", "-15 perc"),
+    makeMenuItem("− 15 perccel korábban", (event) =>
+      shiftEvent(event, -15, "minutes", "-15 perc"),
     );
 
     addSeparator();
 
-    makeMenuItem(
-      "➡ 1 héttel később",
-
-      (event) => shiftEvent(event, 1, "week", "+1 hét"),
+    makeMenuItem("➡ 1 héttel később", (event) =>
+      shiftEvent(event, 1, "week", "+1 hét"),
     );
 
-    makeMenuItem(
-      "⬅ 1 héttel korábban",
-
-      (event) => shiftEvent(event, -1, "week", "-1 hét"),
+    makeMenuItem("⬅ 1 héttel korábban", (event) =>
+      shiftEvent(event, -1, "week", "-1 hét"),
     );
 
-    makeMenuItem(
-      "🕒 Pontos időpont megadása…",
-
-      (event) => setExactTime(event),
-    );
-
-    // --------------------------------------------------------
-    // Hírlevél műveletek
-    // --------------------------------------------------------
+    makeMenuItem("🕒 Pontos időpont megadása…", (event) => setExactTime(event));
 
     addSeparator();
 
-    makeMenuItem(
-      "🧪 Teszt levél küldése",
-
-      (event) => sendTestNewsletter(event),
+    makeMenuItem("🧪 Teszt levél küldése", (event) =>
+      sendTestNewsletter(event),
     );
 
-    makeMenuItem(
-      "✏️ Szerkesztés",
-
-      (event) => openEditor(event),
-    );
+    makeMenuItem("✏️ Szerkesztés", (event) => openEditor(event));
 
     addSeparator();
 
-    makeMenuItem(
-      "📋 Hírlevél ID másolása",
-
-      (event) => copyId(event),
-    );
+    makeMenuItem("📋 Hírlevél ID másolása", (event) => copyId(event));
   }
-
-  // ============================================================
-  // MENÜ MEGJELENÍTÉSE
-  // ============================================================
 
   function showMenu(event, clientX, clientY) {
     selectedEvent = event;
@@ -989,12 +889,10 @@
 
     let y = clientY;
 
-    // Jobb szélen ne lógjon ki.
     if (x + rect.width > window.innerWidth) {
       x = window.innerWidth - rect.width - 8;
     }
 
-    // Alul se lógjon ki.
     if (y + rect.height > window.innerHeight) {
       y = window.innerHeight - rect.height - 8;
     }
@@ -1015,10 +913,6 @@
     "eventClick",
 
     function (event, jsEvent, view) {
-      // ----------------------------------------------------
-      // SHIFT + BAL KLIKK -> saját menü
-      // ----------------------------------------------------
-
       if (jsEvent.shiftKey) {
         jsEvent.preventDefault();
         jsEvent.stopPropagation();
@@ -1027,10 +921,6 @@
 
         return false;
       }
-
-      // ----------------------------------------------------
-      // Normál klikk -> eredeti működés
-      // ----------------------------------------------------
 
       if (typeof originalEventClick === "function") {
         return originalEventClick.call(this, event, jsEvent, view);
@@ -1059,7 +949,7 @@
   window.addEventListener("scroll", hideMenu, true);
 
   // ============================================================
-  // FULLCALENDAR BEÁLLÍTÁSOK
+  // FULLCALENDAR
   // ============================================================
 
   $calendar.fullCalendar("option", "snapDuration", "00:15:00");
@@ -1068,11 +958,10 @@
 
   $calendar.fullCalendar("option", "eventStartEditable", true);
 
-  // Az esemény végét nem engedjük resize-olni.
   $calendar.fullCalendar("option", "eventDurationEditable", false);
 
   // ============================================================
-  // DRAG & DROP
+  // DRAG
   // ============================================================
 
   $calendar.fullCalendar(
@@ -1080,19 +969,7 @@
     "eventDrop",
 
     async function (event, delta, revertFunc, jsEvent, ui, view) {
-      const id = getNewsletterId(event);
-
       const newTime = formatSendingTime(event.start);
-
-      console.log("[PTE] Drag:", {
-        id,
-
-        rawId: event.id,
-
-        title: event.title,
-
-        newTime,
-      });
 
       toast(`Mentés...\n${newTime}`, "loading", 10000);
 
@@ -1120,7 +997,7 @@
   );
 
   // ============================================================
-  // JELENLEGI EVENTEK ENGEDÉLYEZÉSE
+  // EVENTEK SZERKESZTHETŐVÉ TÉTELE
   // ============================================================
 
   const events = $calendar.fullCalendar("clientEvents");
@@ -1136,18 +1013,166 @@
   $calendar.fullCalendar("rerenderEvents");
 
   // ============================================================
-  // AUTOMATIKUS NAPTÁRMAGASSÁG
+  // DINAMIKUS NAPTÁR + 0-24 ÓRÁS RÁCS
   // ============================================================
 
   let lastCalendarHeight = null;
 
   let resizeTimer = null;
 
+  let gridResizeRunning = false;
+
   function findFooter() {
     return document.querySelector(
       "footer.main-footer, .main-footer, footer, .footer",
     );
   }
+
+  // ------------------------------------------------------------
+  // MAGÁNAK A 48 FÉLÓRÁS SORNAK A MÉRETEZÉSE
+  // ------------------------------------------------------------
+
+  function stretchTimeGrid() {
+    if (gridResizeRunning) {
+      return;
+    }
+
+    gridResizeRunning = true;
+
+    try {
+      const calendarElement = $calendar[0];
+
+      if (!calendarElement) {
+        return;
+      }
+
+      // Month nézetben nincs time grid.
+      const scroller = calendarElement.querySelector(".fc-time-grid-container");
+
+      const timeGrid = calendarElement.querySelector(".fc-time-grid");
+
+      const slats = calendarElement.querySelector(".fc-slats");
+
+      const slatsTable = slats?.querySelector("table");
+
+      if (!scroller || !timeGrid || !slats || !slatsTable) {
+        return;
+      }
+
+      const rows = Array.from(slats.querySelectorAll("tbody > tr"));
+
+      if (!rows.length) {
+        return;
+      }
+
+      // Scrollpozíció megőrzése kis képernyőn
+      const oldScrollHeight = scroller.scrollHeight;
+
+      const oldScrollTop = scroller.scrollTop;
+
+      const scrollRatio =
+        oldScrollHeight > 0 ? oldScrollTop / oldScrollHeight : 0;
+
+      // Régi saját méretezés törlése.
+      for (const row of rows) {
+        row.style.height = "";
+        row.style.minHeight = "";
+
+        for (const cell of row.children) {
+          cell.style.height = "";
+          cell.style.minHeight = "";
+        }
+      }
+
+      slats.style.height = "";
+      slatsTable.style.height = "";
+      timeGrid.style.minHeight = "";
+
+      const availableHeight = scroller.clientHeight;
+
+      if (!availableHeight || availableHeight <= 0) {
+        return;
+      }
+
+      // 48 félórás sor.
+      const calculatedRowHeight = availableHeight / rows.length;
+
+      const rowHeight = Math.max(
+        CONFIG.minHalfHourRowHeight,
+        calculatedRowHeight,
+      );
+
+      const wantedGridHeight = rowHeight * rows.length;
+
+      // ----------------------------------------------------
+      // Sorok tényleges magassága
+      // ----------------------------------------------------
+
+      for (const row of rows) {
+        row.style.height = `${rowHeight}px`;
+
+        row.style.minHeight = `${rowHeight}px`;
+
+        for (const cell of row.children) {
+          cell.style.height = `${rowHeight}px`;
+
+          cell.style.minHeight = `${rowHeight}px`;
+        }
+      }
+
+      slats.style.height = `${wantedGridHeight}px`;
+
+      slatsTable.style.height = `${wantedGridHeight}px`;
+
+      timeGrid.style.minHeight = `${wantedGridHeight}px`;
+
+      // ----------------------------------------------------
+      // Nagy kijelzőn nincs függőleges scroll.
+      //
+      // Kis kijelzőn megtartjuk a minimum sormagasságot
+      // és scrollozunk.
+      // ----------------------------------------------------
+
+      if (wantedGridHeight > availableHeight + 1) {
+        scroller.style.overflowY = "auto";
+      } else {
+        scroller.style.overflowY = "hidden";
+
+        scroller.scrollTop = 0;
+      }
+
+      console.log("[PTE] Dinamikus TimeGrid:", {
+        rowCount: rows.length,
+
+        availableHeight,
+
+        calculatedRowHeight,
+
+        appliedRowHeight: rowHeight,
+
+        wantedGridHeight,
+
+        scroll: wantedGridHeight > availableHeight + 1,
+      });
+
+      // A sorok koordinátái megváltoztak,
+      // ezért az eseményeket újrarajzoljuk.
+      $calendar.fullCalendar("rerenderEvents");
+
+      // Kis kijelzőn scrollpozíció visszaállítása
+      if (wantedGridHeight > availableHeight + 1 && scrollRatio > 0) {
+        requestAnimationFrame(() => {
+          scroller.scrollTop = Math.round(scroller.scrollHeight * scrollRatio);
+        });
+      }
+    } finally {
+      gridResizeRunning = false;
+    }
+  }
+
+  // ------------------------------------------------------------
+  // FULLCALENDAR KÜLSŐ MAGASSÁG
+  // ------------------------------------------------------------
 
   function fitCalendarToViewport() {
     const calendarElement = $calendar[0];
@@ -1160,11 +1185,12 @@
 
     const calendarTop = Math.max(0, calendarRect.top);
 
-    // Alapesetben a viewport aljáig mehetünk.
+    // Alapeset:
+    // viewport aljáig.
     let bottomLimit = window.innerHeight - CONFIG.bottomGap;
 
-    // Ha a footer jelenleg ténylegesen a viewportban van
-    // és a naptár alatt kezdődik, akkor addig nyújtjuk.
+    // Ha a footer éppen a viewportban van,
+    // annak tetejéig.
     const footer = findFooter();
 
     if (footer) {
@@ -1195,7 +1221,9 @@
     if (availableHeight !== lastCalendarHeight) {
       lastCalendarHeight = availableHeight;
 
-      console.log("[PTE] Calendar méretezés:", {
+      $calendar.fullCalendar("option", "height", availableHeight);
+
+      console.log("[PTE] Calendar magasság:", {
         viewportHeight: window.innerHeight,
 
         calendarTop,
@@ -1204,12 +1232,14 @@
 
         calendarHeight: availableHeight,
       });
-
-      $calendar.fullCalendar("option", "height", availableHeight);
     }
 
-    // Szélességi layoutot is frissítjük.
     $calendar.fullCalendar("updateSize");
+
+    // FullCalendar előbb fejezze be a saját layoutját.
+    requestAnimationFrame(() => {
+      stretchTimeGrid();
+    });
   }
 
   function scheduleCalendarFit(delay = 80) {
@@ -1225,10 +1255,6 @@
   window.addEventListener("resize", () => {
     scheduleCalendarFit(60);
   });
-
-  // ============================================================
-  // MOBIL / TABLET FORGATÁS
-  // ============================================================
 
   window.addEventListener("orientationchange", () => {
     scheduleCalendarFit(200);
@@ -1256,12 +1282,12 @@
 
       const width = Math.round(entries[0].contentRect.width);
 
-      // Csak szélességváltozásra reagálunk,
-      // hogy ne legyen ResizeObserver loop.
+      // Csak szélességváltozásra,
+      // hogy ne legyen resize loop.
       if (width !== lastObservedWidth) {
         lastObservedWidth = width;
 
-        scheduleCalendarFit(50);
+        scheduleCalendarFit(60);
       }
     });
 
@@ -1271,16 +1297,13 @@
   }
 
   // ============================================================
-  // ADMINLTE / BODY CLASS VÁLTOZÁS
-  //
-  // pl. sidebar collapse
+  // ADMINLTE SIDEBAR CLASS VÁLTOZÁS
   // ============================================================
 
   if (typeof MutationObserver !== "undefined") {
     const bodyObserver = new MutationObserver(() => {
       scheduleCalendarFit(50);
 
-      // Sidebar animáció miatt később is
       setTimeout(fitCalendarToViewport, 250);
 
       setTimeout(fitCalendarToViewport, 450);
@@ -1296,7 +1319,7 @@
   }
 
   // ============================================================
-  // NAPTÁR NAVIGÁCIÓ UTÁN ÚJRAMÉRETEZÉS
+  // NAPTÁR NAVIGÁCIÓ
   // ============================================================
 
   jq(document).on(
@@ -1315,11 +1338,13 @@
       scheduleCalendarFit(80);
 
       setTimeout(fitCalendarToViewport, 250);
+
+      setTimeout(fitCalendarToViewport, 500);
     },
   );
 
   // ============================================================
-  // ELSŐ MÉRETEZÉS
+  // ELSŐ DINAMIKUS MÉRETEZÉSEK
   // ============================================================
 
   setTimeout(fitCalendarToViewport, 0);
@@ -1364,10 +1389,11 @@ MŰVELETEK
   szerkesztés
   ID másolása
 
-LAYOUT
-  automatikus naptármagasság
-  resize / zoom
-  sidebar ki/be`,
+DINAMIKUS LAYOUT
+  naptár kitölti az elérhető magasságot
+  0–24 órás rács is kitölti a naptárat
+  kis ablaknál automatikus scroll
+  resize / zoom / sidebar támogatás`,
     "color:#00a000;font-weight:bold;font-size:14px",
   );
 
@@ -1376,7 +1402,7 @@ LAYOUT
 
 Mozgatás: sima drag
 Menü: SHIFT + bal klikk
-Naptárméret: automatikus`,
+Naptár: dinamikus 0–24 órás rács`,
     "success",
     4500,
   );
