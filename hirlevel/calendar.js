@@ -6,18 +6,19 @@
   //
   // ✓ 15 perces drag & drop
   // ✓ automatikus sending_time mentés
-  // ✓ redirect hiba tolerálása
-  // ✓ szerveroldali visszaellenőrzés
-  // ✓ Shift + bal klikk menü
+  // ✓ redirect-hiba tolerálása
+  // ✓ szerveroldali mentés-visszaellenőrzés
+  // ✓ Shift + bal klikk extra menü
   // ✓ +/- 15 perc
   // ✓ +/- 1 hét
   // ✓ pontos időpont megadása
   // ✓ teszt levél küldése
-  // ✓ szerkesztés
-  // ✓ ID másolás
-  // ✓ dinamikus naptármagasság
-  // ✓ dinamikusan széthúzott 0–24 órás rács
-  // ✓ resize / zoom / sidebar kezelés
+  // ✓ szerkesztőoldal megnyitása
+  // ✓ ID másolása
+  // ✓ dinamikus FullCalendar magasság
+  // ✓ dinamikus 0–24 órás időrács
+  // ✓ drag közben teljes layout-freeze
+  // ✓ resize / zoom / sidebar támogatás
   // ============================================================
 
   // ============================================================
@@ -32,11 +33,11 @@
 
     bottomGap: 8,
 
-    // A teljes FullCalendar minimum magassága
+    // Teljes FullCalendar minimum magassága
     minCalendarHeight: 380,
 
-    // Egy félórás sor ennél ne legyen alacsonyabb.
-    // Kis ablaknál inkább scrollozunk.
+    // Minimum félórás sormagasság.
+    // Ha ennél kisebb lenne, inkább belső scroll lesz.
     minHalfHourRowHeight: 18,
   };
 
@@ -66,13 +67,25 @@
 
   if (window.__PTE_CALENDAR_TOOLS_ACTIVE__) {
     alert(
-      "A PTE naptársegéd már aktív.\n\n" + "Újraindításhoz előbb nyomj F5-öt.",
+      "A PTE naptársegéd már aktív.\n\n" + "Újraindításhoz nyomj előbb F5-öt.",
     );
 
     return;
   }
 
   window.__PTE_CALENDAR_TOOLS_ACTIVE__ = true;
+
+  // ============================================================
+  // ÁLLAPOTOK
+  // ============================================================
+
+  let isCalendarDragging = false;
+  let isCalendarLayouting = false;
+
+  let resizeTimer = null;
+
+  let lastCalendarHeight = null;
+  let lastAppliedRowHeight = null;
 
   // ============================================================
   // SEGÉDEK
@@ -82,7 +95,10 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  // ------------------------------------------------------------
   // "7629text" -> "7629"
+  // ------------------------------------------------------------
+
   function getNewsletterId(event) {
     const raw = String(event?.id ?? "");
 
@@ -90,6 +106,10 @@
 
     return match ? match[1] : null;
   }
+
+  // ------------------------------------------------------------
+  // URL-ek
+  // ------------------------------------------------------------
 
   function getUpdateUrl(id) {
     return (
@@ -106,6 +126,10 @@
       encodeURIComponent(id)
     );
   }
+
+  // ------------------------------------------------------------
+  // Dátum -> YYYY-MM-DD HH:mm
+  // ------------------------------------------------------------
 
   function formatSendingTime(value) {
     if (!value) {
@@ -132,6 +156,15 @@
       pad(d.getMinutes())
     );
   }
+
+  // ------------------------------------------------------------
+  // 2026-09-20T13:15
+  // 2026-09-20 13:15
+  //
+  // ->
+  //
+  // 2026-09-20 13:15
+  // ------------------------------------------------------------
 
   function normalizeSendingTime(value) {
     return String(value ?? "")
@@ -160,16 +193,19 @@
 
       const type = String(control.type || "").toLowerCase();
 
+      // File input
       if (type === "file") {
         params.append(name, "");
 
         continue;
       }
 
+      // Checkbox / radio
       if ((type === "checkbox" || type === "radio") && !control.checked) {
         continue;
       }
 
+      // Multiple select
       if (control.tagName === "SELECT" && control.multiple) {
         for (const option of control.options) {
           if (option.selected) {
@@ -389,8 +425,6 @@
 
     const sendingTime = normalizeSendingTime(formatSendingTime(event.start));
 
-    console.log(`[PTE] #${id}: szerkesztő form lekérése...`);
-
     const { url, form } = await loadNewsletterForm(id);
 
     const params = formToParams(form);
@@ -401,8 +435,13 @@
 
     console.log(`[PTE] #${id}: mentés → ${sendingTime}`);
 
-    // A szerver a sikeres mentés után HTTP-re
-    // redirectelhet. Maga a mentés ettől még sikeres.
+    // --------------------------------------------------------
+    // POST
+    //
+    // A backend sikeres mentés után HTTP redirectet küldhet.
+    // A redirect hibája nem jelenti, hogy a mentés sikertelen.
+    // --------------------------------------------------------
+
     try {
       const response = await fetch(url, {
         method: "POST",
@@ -427,12 +466,10 @@
         type: response.type,
 
         redirected: response.redirected,
-
-        url: response.url,
       });
     } catch (error) {
       console.warn(
-        "[PTE] POST/redirect hiba. " +
+        "[PTE] POST / redirect hiba. " +
           "A tényleges mentést külön ellenőrizzük.",
         error,
       );
@@ -454,7 +491,7 @@
   }
 
   // ============================================================
-  // +/- IDŐPONT
+  // IDŐPONT ELTOLÁS
   // ============================================================
 
   async function shiftEvent(event, amount, unit, description) {
@@ -602,8 +639,6 @@
 
     toast("Teszt levél küldése...", "loading", 15000);
 
-    console.log(`[PTE] Tesztküldés: #${id}`, url);
-
     try {
       const response = await fetch(url, {
         method: "GET",
@@ -626,8 +661,6 @@
         type: response.type,
 
         redirected: response.redirected,
-
-        url: response.url,
       });
 
       if (
@@ -643,7 +676,7 @@
 
       throw new Error(`HTTP ${response.status}`);
     } catch (error) {
-      console.warn("[PTE] Tesztküldés/redirect hiba:", error);
+      console.warn("[PTE] Tesztküldés / redirect hiba:", error);
 
       toast(
         "A tesztküldési kérés elindult, " +
@@ -805,6 +838,10 @@
 
     const title = String(event.title || "Hírlevél");
 
+    // --------------------------------------------------------
+    // Fejléc
+    // --------------------------------------------------------
+
     const header = document.createElement("div");
 
     header.textContent = `${title} (#${id || "?"})`;
@@ -823,6 +860,10 @@
 
     menu.appendChild(header);
 
+    // --------------------------------------------------------
+    // Időpont
+    // --------------------------------------------------------
+
     const time = document.createElement("div");
 
     time.textContent = formatSendingTime(event.start);
@@ -839,37 +880,59 @@
 
     addSeparator();
 
-    makeMenuItem("＋ 15 perccel később", (event) =>
-      shiftEvent(event, 15, "minutes", "+15 perc"),
+    makeMenuItem(
+      "＋ 15 perccel később",
+
+      (event) => shiftEvent(event, 15, "minutes", "+15 perc"),
     );
 
-    makeMenuItem("− 15 perccel korábban", (event) =>
-      shiftEvent(event, -15, "minutes", "-15 perc"),
+    makeMenuItem(
+      "− 15 perccel korábban",
+
+      (event) => shiftEvent(event, -15, "minutes", "-15 perc"),
     );
 
     addSeparator();
 
-    makeMenuItem("➡ 1 héttel később", (event) =>
-      shiftEvent(event, 1, "week", "+1 hét"),
+    makeMenuItem(
+      "➡ 1 héttel később",
+
+      (event) => shiftEvent(event, 1, "week", "+1 hét"),
     );
 
-    makeMenuItem("⬅ 1 héttel korábban", (event) =>
-      shiftEvent(event, -1, "week", "-1 hét"),
+    makeMenuItem(
+      "⬅ 1 héttel korábban",
+
+      (event) => shiftEvent(event, -1, "week", "-1 hét"),
     );
 
-    makeMenuItem("🕒 Pontos időpont megadása…", (event) => setExactTime(event));
+    makeMenuItem(
+      "🕒 Pontos időpont megadása…",
+
+      (event) => setExactTime(event),
+    );
 
     addSeparator();
 
-    makeMenuItem("🧪 Teszt levél küldése", (event) =>
-      sendTestNewsletter(event),
+    makeMenuItem(
+      "🧪 Teszt levél küldése",
+
+      (event) => sendTestNewsletter(event),
     );
 
-    makeMenuItem("✏️ Szerkesztés", (event) => openEditor(event));
+    makeMenuItem(
+      "✏️ Szerkesztés",
+
+      (event) => openEditor(event),
+    );
 
     addSeparator();
 
-    makeMenuItem("📋 Hírlevél ID másolása", (event) => copyId(event));
+    makeMenuItem(
+      "📋 Hírlevél ID másolása",
+
+      (event) => copyId(event),
+    );
   }
 
   function showMenu(event, clientX, clientY) {
@@ -949,7 +1012,7 @@
   window.addEventListener("scroll", hideMenu, true);
 
   // ============================================================
-  // FULLCALENDAR
+  // FULLCALENDAR ALAPBEÁLLÍTÁSOK
   // ============================================================
 
   $calendar.fullCalendar("option", "snapDuration", "00:15:00");
@@ -961,14 +1024,52 @@
   $calendar.fullCalendar("option", "eventDurationEditable", false);
 
   // ============================================================
-  // DRAG
+  // DRAG FREEZE
+  // ============================================================
+
+  $calendar.fullCalendar(
+    "option",
+    "eventDragStart",
+
+    function () {
+      isCalendarDragging = true;
+
+      clearTimeout(resizeTimer);
+
+      hideMenu();
+
+      console.log("[PTE] Drag start - layout befagyasztva");
+    },
+  );
+
+  $calendar.fullCalendar(
+    "option",
+    "eventDragStop",
+
+    function () {
+      isCalendarDragging = false;
+
+      console.log("[PTE] Drag stop - layout feloldva");
+
+      // A húzás után kicsivel újraigazítjuk,
+      // de csak miután a drag teljesen befejeződött.
+      setTimeout(() => {
+        if (!isCalendarDragging) {
+          fitCalendarToViewport(false);
+        }
+      }, 250);
+    },
+  );
+
+  // ============================================================
+  // DRAG + MENTÉS
   // ============================================================
 
   $calendar.fullCalendar(
     "option",
     "eventDrop",
 
-    async function (event, delta, revertFunc, jsEvent, ui, view) {
+    async function (event, delta, revertFunc) {
       const newTime = formatSendingTime(event.start);
 
       toast(`Mentés...\n${newTime}`, "loading", 10000);
@@ -1013,14 +1114,8 @@
   $calendar.fullCalendar("rerenderEvents");
 
   // ============================================================
-  // DINAMIKUS NAPTÁR + 0-24 ÓRÁS RÁCS
+  // DINAMIKUS LAYOUT
   // ============================================================
-
-  let lastCalendarHeight = null;
-
-  let resizeTimer = null;
-
-  let gridResizeRunning = false;
 
   function findFooter() {
     return document.querySelector(
@@ -1029,84 +1124,76 @@
   }
 
   // ------------------------------------------------------------
-  // MAGÁNAK A 48 FÉLÓRÁS SORNAK A MÉRETEZÉSE
+  // 48 félórás sor méretezése
   // ------------------------------------------------------------
 
-  function stretchTimeGrid() {
-    if (gridResizeRunning) {
+  function stretchTimeGrid(force = false) {
+    if (isCalendarDragging || isCalendarLayouting) {
       return;
     }
 
-    gridResizeRunning = true;
+    const calendarElement = $calendar[0];
+
+    if (!calendarElement) {
+      return;
+    }
+
+    const scroller = calendarElement.querySelector(".fc-time-grid-container");
+
+    const slats = calendarElement.querySelector(".fc-slats");
+
+    const slatsTable = slats?.querySelector("table");
+
+    if (!scroller || !slats || !slatsTable) {
+      // pl. Month nézet
+      return;
+    }
+
+    const rows = Array.from(slats.querySelectorAll("tbody > tr"));
+
+    if (!rows.length) {
+      return;
+    }
+
+    const availableHeight = scroller.clientHeight;
+
+    if (!availableHeight || availableHeight <= 0) {
+      return;
+    }
+
+    const naturalRowHeight = availableHeight / rows.length;
+
+    const needsScroll = naturalRowHeight < CONFIG.minHalfHourRowHeight;
+
+    const rowHeight = needsScroll
+      ? CONFIG.minHalfHourRowHeight
+      : naturalRowHeight;
+
+    const totalGridHeight = rowHeight * rows.length;
+
+    // --------------------------------------------------------
+    // Csak akkor kell komoly újralayout,
+    // ha ténylegesen változott a sormagasság.
+    // --------------------------------------------------------
+
+    const firstRowHeight = parseFloat(rows[0].style.height || "0");
+
+    const rowChanged =
+      force ||
+      Math.abs(firstRowHeight - rowHeight) > 0.25 ||
+      lastAppliedRowHeight === null;
+
+    // Scroll mód ettől függetlenül helyes legyen.
+    scroller.style.overflowY = needsScroll ? "auto" : "hidden";
+
+    if (!rowChanged) {
+      return;
+    }
+
+    isCalendarLayouting = true;
 
     try {
-      const calendarElement = $calendar[0];
-
-      if (!calendarElement) {
-        return;
-      }
-
-      // Month nézetben nincs time grid.
-      const scroller = calendarElement.querySelector(".fc-time-grid-container");
-
-      const timeGrid = calendarElement.querySelector(".fc-time-grid");
-
-      const slats = calendarElement.querySelector(".fc-slats");
-
-      const slatsTable = slats?.querySelector("table");
-
-      if (!scroller || !timeGrid || !slats || !slatsTable) {
-        return;
-      }
-
-      const rows = Array.from(slats.querySelectorAll("tbody > tr"));
-
-      if (!rows.length) {
-        return;
-      }
-
-      // Scrollpozíció megőrzése kis képernyőn
-      const oldScrollHeight = scroller.scrollHeight;
-
-      const oldScrollTop = scroller.scrollTop;
-
-      const scrollRatio =
-        oldScrollHeight > 0 ? oldScrollTop / oldScrollHeight : 0;
-
-      // Régi saját méretezés törlése.
-      for (const row of rows) {
-        row.style.height = "";
-        row.style.minHeight = "";
-
-        for (const cell of row.children) {
-          cell.style.height = "";
-          cell.style.minHeight = "";
-        }
-      }
-
-      slats.style.height = "";
-      slatsTable.style.height = "";
-      timeGrid.style.minHeight = "";
-
-      const availableHeight = scroller.clientHeight;
-
-      if (!availableHeight || availableHeight <= 0) {
-        return;
-      }
-
-      // 48 félórás sor.
-      const calculatedRowHeight = availableHeight / rows.length;
-
-      const rowHeight = Math.max(
-        CONFIG.minHalfHourRowHeight,
-        calculatedRowHeight,
-      );
-
-      const wantedGridHeight = rowHeight * rows.length;
-
-      // ----------------------------------------------------
-      // Sorok tényleges magassága
-      // ----------------------------------------------------
+      lastAppliedRowHeight = rowHeight;
 
       for (const row of rows) {
         row.style.height = `${rowHeight}px`;
@@ -1120,61 +1207,46 @@
         }
       }
 
-      slats.style.height = `${wantedGridHeight}px`;
+      slats.style.height = `${totalGridHeight}px`;
 
-      slatsTable.style.height = `${wantedGridHeight}px`;
+      slatsTable.style.height = `${totalGridHeight}px`;
 
-      timeGrid.style.minHeight = `${wantedGridHeight}px`;
-
-      // ----------------------------------------------------
-      // Nagy kijelzőn nincs függőleges scroll.
-      //
-      // Kis kijelzőn megtartjuk a minimum sormagasságot
-      // és scrollozunk.
-      // ----------------------------------------------------
-
-      if (wantedGridHeight > availableHeight + 1) {
-        scroller.style.overflowY = "auto";
-      } else {
-        scroller.style.overflowY = "hidden";
-
-        scroller.scrollTop = 0;
-      }
-
-      console.log("[PTE] Dinamikus TimeGrid:", {
+      console.log("[PTE] TimeGrid:", {
         rowCount: rows.length,
 
         availableHeight,
 
-        calculatedRowHeight,
+        rowHeight,
 
-        appliedRowHeight: rowHeight,
+        totalGridHeight,
 
-        wantedGridHeight,
-
-        scroll: wantedGridHeight > availableHeight + 1,
+        needsScroll,
       });
 
-      // A sorok koordinátái megváltoztak,
-      // ezért az eseményeket újrarajzoljuk.
-      $calendar.fullCalendar("rerenderEvents");
+      // FONTOS:
+      // a DOM sorok magassága megváltozott.
+      // A FullCalendarnak újra kell számolnia
+      // a drag koordinátákat is.
+      $calendar.fullCalendar("updateSize");
 
-      // Kis kijelzőn scrollpozíció visszaállítása
-      if (wantedGridHeight > availableHeight + 1 && scrollRatio > 0) {
-        requestAnimationFrame(() => {
-          scroller.scrollTop = Math.round(scroller.scrollHeight * scrollRatio);
-        });
-      }
+      $calendar.fullCalendar("rerenderEvents");
     } finally {
-      gridResizeRunning = false;
+      requestAnimationFrame(() => {
+        isCalendarLayouting = false;
+      });
     }
   }
 
   // ------------------------------------------------------------
-  // FULLCALENDAR KÜLSŐ MAGASSÁG
+  // Teljes FullCalendar magassága
   // ------------------------------------------------------------
 
-  function fitCalendarToViewport() {
+  function fitCalendarToViewport(force = false) {
+    // Drag közben SEMMI.
+    if (isCalendarDragging || isCalendarLayouting) {
+      return;
+    }
+
     const calendarElement = $calendar[0];
 
     if (!calendarElement) {
@@ -1185,21 +1257,18 @@
 
     const calendarTop = Math.max(0, calendarRect.top);
 
-    // Alapeset:
-    // viewport aljáig.
     let bottomLimit = window.innerHeight - CONFIG.bottomGap;
 
-    // Ha a footer éppen a viewportban van,
-    // annak tetejéig.
+    // --------------------------------------------------------
+    // Footer
+    // --------------------------------------------------------
+
     const footer = findFooter();
 
     if (footer) {
-      const footerStyle = window.getComputedStyle(footer);
+      const style = window.getComputedStyle(footer);
 
-      if (
-        footerStyle.display !== "none" &&
-        footerStyle.visibility !== "hidden"
-      ) {
+      if (style.display !== "none" && style.visibility !== "hidden") {
         const footerRect = footer.getBoundingClientRect();
 
         if (
@@ -1208,6 +1277,7 @@
         ) {
           bottomLimit = Math.min(
             bottomLimit,
+
             footerRect.top - CONFIG.bottomGap,
           );
         }
@@ -1218,95 +1288,112 @@
 
     availableHeight = Math.max(CONFIG.minCalendarHeight, availableHeight);
 
-    if (availableHeight !== lastCalendarHeight) {
+    const heightChanged = availableHeight !== lastCalendarHeight;
+
+    // --------------------------------------------------------
+    // FullCalendar külső magasság
+    // --------------------------------------------------------
+
+    if (heightChanged || force) {
       lastCalendarHeight = availableHeight;
 
-      $calendar.fullCalendar("option", "height", availableHeight);
+      isCalendarLayouting = true;
 
-      console.log("[PTE] Calendar magasság:", {
-        viewportHeight: window.innerHeight,
+      try {
+        $calendar.fullCalendar("option", "height", availableHeight);
 
-        calendarTop,
+        $calendar.fullCalendar("updateSize");
+      } finally {
+        isCalendarLayouting = false;
+      }
 
-        bottomLimit,
-
-        calendarHeight: availableHeight,
-      });
+      console.log("[PTE] Calendar height:", availableHeight);
     }
 
-    $calendar.fullCalendar("updateSize");
+    // --------------------------------------------------------
+    // A FullCalendar saját layoutja után nyújtjuk a sorokat.
+    // --------------------------------------------------------
 
-    // FullCalendar előbb fejezze be a saját layoutját.
     requestAnimationFrame(() => {
-      stretchTimeGrid();
+      requestAnimationFrame(() => {
+        if (!isCalendarDragging) {
+          stretchTimeGrid(force);
+        }
+      });
     });
   }
 
-  function scheduleCalendarFit(delay = 80) {
+  // ============================================================
+  // DEBOUNCE
+  // ============================================================
+
+  function scheduleCalendarFit(delay = 100, force = false) {
+    if (isCalendarDragging) {
+      return;
+    }
+
     clearTimeout(resizeTimer);
 
-    resizeTimer = setTimeout(fitCalendarToViewport, delay);
-  }
-
-  // ============================================================
-  // RESIZE / ZOOM
-  // ============================================================
-
-  window.addEventListener("resize", () => {
-    scheduleCalendarFit(60);
-  });
-
-  window.addEventListener("orientationchange", () => {
-    scheduleCalendarFit(200);
-  });
-
-  // ============================================================
-  // SIDEBAR / SZÉLESSÉGVÁLTOZÁS
-  // ============================================================
-
-  function getCalendarParent() {
-    const element = $calendar[0];
-
-    return element?.parentElement || document.body;
-  }
-
-  let lastObservedWidth = null;
-
-  if (typeof ResizeObserver !== "undefined") {
-    const parent = getCalendarParent();
-
-    const resizeObserver = new ResizeObserver((entries) => {
-      if (!entries || !entries.length) {
-        return;
+    resizeTimer = setTimeout(() => {
+      if (!isCalendarDragging) {
+        fitCalendarToViewport(force);
       }
-
-      const width = Math.round(entries[0].contentRect.width);
-
-      // Csak szélességváltozásra,
-      // hogy ne legyen resize loop.
-      if (width !== lastObservedWidth) {
-        lastObservedWidth = width;
-
-        scheduleCalendarFit(60);
-      }
-    });
-
-    resizeObserver.observe(parent);
-
-    window.__PTE_CALENDAR_RESIZE_OBSERVER__ = resizeObserver;
+    }, delay);
   }
 
   // ============================================================
-  // ADMINLTE SIDEBAR CLASS VÁLTOZÁS
+  // WINDOW RESIZE / ZOOM
+  // ============================================================
+
+  window.addEventListener(
+    "resize",
+
+    () => {
+      scheduleCalendarFit(120, true);
+    },
+  );
+
+  // ============================================================
+  // ORIENTATION
+  // ============================================================
+
+  window.addEventListener(
+    "orientationchange",
+
+    () => {
+      scheduleCalendarFit(250, true);
+    },
+  );
+
+  // ============================================================
+  // SIDEBAR / ADMINLTE
+  //
+  // SZÁNDÉKOSAN NINCS ResizeObserver.
   // ============================================================
 
   if (typeof MutationObserver !== "undefined") {
-    const bodyObserver = new MutationObserver(() => {
-      scheduleCalendarFit(50);
+    const bodyObserver = new MutationObserver((mutations) => {
+      if (isCalendarDragging) {
+        return;
+      }
 
-      setTimeout(fitCalendarToViewport, 250);
+      const classChanged = mutations.some(
+        (mutation) =>
+          mutation.type === "attributes" && mutation.attributeName === "class",
+      );
 
-      setTimeout(fitCalendarToViewport, 450);
+      if (!classChanged) {
+        return;
+      }
+
+      scheduleCalendarFit(100, true);
+
+      // Sidebar animáció vége
+      setTimeout(() => {
+        if (!isCalendarDragging) {
+          fitCalendarToViewport(true);
+        }
+      }, 350);
     });
 
     bodyObserver.observe(document.body, {
@@ -1335,25 +1422,34 @@
     ].join(","),
 
     () => {
-      scheduleCalendarFit(80);
+      if (isCalendarDragging) {
+        return;
+      }
 
-      setTimeout(fitCalendarToViewport, 250);
+      // Új nézetnél új DOM-sorok jönnek létre.
+      lastAppliedRowHeight = null;
 
-      setTimeout(fitCalendarToViewport, 500);
+      scheduleCalendarFit(150, true);
+
+      setTimeout(() => {
+        if (!isCalendarDragging) {
+          fitCalendarToViewport(true);
+        }
+      }, 350);
     },
   );
 
   // ============================================================
-  // ELSŐ DINAMIKUS MÉRETEZÉSEK
+  // ELSŐ MÉRETEZÉS
   // ============================================================
 
-  setTimeout(fitCalendarToViewport, 0);
+  setTimeout(() => {
+    fitCalendarToViewport(true);
+  }, 120);
 
-  setTimeout(fitCalendarToViewport, 100);
-
-  setTimeout(fitCalendarToViewport, 300);
-
-  setTimeout(fitCalendarToViewport, 700);
+  setTimeout(() => {
+    fitCalendarToViewport(true);
+  }, 450);
 
   // ============================================================
   // DIAGNOSZTIKA
@@ -1377,6 +1473,7 @@
 MOZGATÁS
   sima drag
   15 perces lépések
+  drag közben layout-freeze
 
 EXTRA MENÜ
   SHIFT + bal klikk
@@ -1390,10 +1487,12 @@ MŰVELETEK
   ID másolása
 
 DINAMIKUS LAYOUT
-  naptár kitölti az elérhető magasságot
-  0–24 órás rács is kitölti a naptárat
-  kis ablaknál automatikus scroll
-  resize / zoom / sidebar támogatás`,
+  kitölti az elérhető magasságot
+  0–24 órás rács dinamikus
+  kis ablaknál belső scroll
+  resize / zoom
+  sidebar támogatás
+  nincs ResizeObserver`,
     "color:#00a000;font-weight:bold;font-size:14px",
   );
 
@@ -1402,7 +1501,7 @@ DINAMIKUS LAYOUT
 
 Mozgatás: sima drag
 Menü: SHIFT + bal klikk
-Naptár: dinamikus 0–24 órás rács`,
+Drag közben a layout zárolva van.`,
     "success",
     4500,
   );
