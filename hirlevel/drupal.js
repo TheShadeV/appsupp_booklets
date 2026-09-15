@@ -163,11 +163,15 @@
       for (const [key, value] of Object.entries(object)) {
         if (value !== undefined && value !== null) {
           if (key === "tabStops") {
-            const stops = new Map((result.tabStops || []).map((stop) => [stop.position, stop]));
+            const stops = new Map(
+              (result.tabStops || []).map((stop) => [stop.position, stop]),
+            );
             for (const stop of value) {
               stops.set(stop.position, stop);
             }
-            result.tabStops = [...stops.values()].sort((a, b) => a.position - b.position);
+            result.tabStops = [...stops.values()].sort(
+              (a, b) => a.position - b.position,
+            );
           } else {
             result[key] = value;
           }
@@ -399,7 +403,9 @@
       return 720;
     }
     const settings = parseXml(await file.async("text"));
-    const value = Number(getWordAttribute(firstDescendant(settings, "defaultTabStop"), "val"));
+    const value = Number(
+      getWordAttribute(firstDescendant(settings, "defaultTabStop"), "val"),
+    );
     return Number.isFinite(value) && value > 0 ? value : 720;
   }
 
@@ -711,10 +717,12 @@
 
     const tabs = firstDirectChild(pPr, "tabs");
     if (tabs) {
-      result.tabStops = directChildren(tabs, "tab").map((tab) => ({
-        position: Number(getWordAttribute(tab, "pos")),
-        alignment: getWordAttribute(tab, "val") || "left",
-      })).filter((stop) => Number.isFinite(stop.position));
+      result.tabStops = directChildren(tabs, "tab")
+        .map((tab) => ({
+          position: Number(getWordAttribute(tab, "pos")),
+          alignment: getWordAttribute(tab, "val") || "left",
+        }))
+        .filter((stop) => Number.isFinite(stop.position));
     }
 
     const pageBreakBefore = firstDirectChild(pPr, "pageBreakBefore");
@@ -1887,9 +1895,11 @@
   // =========================================================
 
   function renderInlineImageParagraph(paragraph, baseContext, paragraphState) {
-    if (getOuterParagraphPlainText(paragraph) ||
-        getTopLevelDescendants(paragraph, "anchor", "txbxContent").length ||
-        !getTopLevelDescendants(paragraph, "inline", "txbxContent").length) {
+    if (
+      getOuterParagraphPlainText(paragraph) ||
+      getTopLevelDescendants(paragraph, "anchor", "txbxContent").length ||
+      !getTopLevelDescendants(paragraph, "inline", "txbxContent").length
+    ) {
       return null;
     }
 
@@ -1903,7 +1913,9 @@
       const name = localName(node);
       if (["pPr", "rPr"].includes(name)) return;
       if (name === "AlternateContent") {
-        const selected = firstDirectChild(node, "Choice") || firstDirectChild(node, "Fallback");
+        const selected =
+          firstDirectChild(node, "Choice") ||
+          firstDirectChild(node, "Fallback");
         if (selected) collect(selected);
         return;
       }
@@ -1916,8 +1928,10 @@
         }
         const dimensions = getDrawingDimensions(inline);
         tokens.push({
-          type: "image", relationId,
-          width: dimensions.widthTwips || getEffectiveContainerWidthTwips(context),
+          type: "image",
+          relationId,
+          width:
+            dimensions.widthTwips || getEffectiveContainerWidthTwips(context),
           alt: getDrawingAltText(inline),
           href: getDrawingHyperlink(inline, context),
         });
@@ -1939,48 +1953,72 @@
       for (const child of node.children) collect(child);
     }
     collect(paragraph);
-    if (!supported || !tokens.some((token) => token.type === "image")) return null;
+    if (!supported || !tokens.some((token) => token.type === "image"))
+      return null;
 
     const properties = paragraphState.paragraphProperties;
     const containerWidth = getEffectiveContainerWidthTwips(context);
     const indent = Math.max(0, ptValueToTwips(properties.marginLeft));
     const defaultTab = context.defaultTabStopTwips || 720;
-    const stops = (properties.tabStops || []).filter((stop) =>
-      !["clear", "bar"].includes(stop.alignment));
+    const stops = (properties.tabStops || []).filter(
+      (stop) => !["clear", "bar"].includes(stop.alignment),
+    );
     const lines = [[]];
     for (const token of tokens) {
       if (token.type === "break") lines.push([]);
       else lines[lines.length - 1].push(token);
     }
 
-    const body = lines.map((line, lineIndex) => {
-      const items = [];
-      let cursor = lineIndex === 0 ? Math.max(0, ptValueToTwips(properties.textIndent)) : 0;
-      for (let index = 0; index < line.length; index++) {
-        const token = line[index];
-        if (token.type === "image") {
-          items.push({ ...token, x: cursor });
-          cursor += token.width;
-          continue;
+    const body = lines
+      .map((line, lineIndex) => {
+        const items = [];
+        let cursor =
+          lineIndex === 0
+            ? Math.max(0, ptValueToTwips(properties.textIndent))
+            : 0;
+        for (let index = 0; index < line.length; index++) {
+          const token = line[index];
+          if (token.type === "image") {
+            items.push({ ...token, x: cursor });
+            cursor += token.width;
+            continue;
+          }
+          const stop = stops.find(
+            (candidate) => candidate.position > cursor + indent,
+          );
+          let followingWidth = 0;
+          for (
+            let next = index + 1;
+            next < line.length && line[next].type === "image";
+            next++
+          ) {
+            followingWidth += line[next].width;
+          }
+          const position =
+            stop?.position ||
+            (Math.floor((cursor + indent) / defaultTab) + 1) * defaultTab;
+          const adjustment = ["right", "end", "decimal"].includes(
+            stop?.alignment,
+          )
+            ? followingWidth
+            : stop?.alignment === "center"
+              ? followingWidth / 2
+              : 0;
+          cursor = Math.max(cursor, position - indent - adjustment);
         }
-        const stop = stops.find((candidate) => candidate.position > cursor + indent);
-        let followingWidth = 0;
-        for (let next = index + 1; next < line.length && line[next].type === "image"; next++) {
-          followingWidth += line[next].width;
+        if (!items.length) return "<div><br></div>";
+        if (!line.some((token) => token.type === "tab")) {
+          const offset = Math.max(
+            0,
+            alignedPosition(properties.textAlign, containerWidth, cursor),
+          );
+          items.forEach((item) => {
+            item.x += offset;
+          });
         }
-        const position = stop?.position ||
-          (Math.floor((cursor + indent) / defaultTab) + 1) * defaultTab;
-        const adjustment = ["right", "end", "decimal"].includes(stop?.alignment)
-          ? followingWidth : stop?.alignment === "center" ? followingWidth / 2 : 0;
-        cursor = Math.max(cursor, position - indent - adjustment);
-      }
-      if (!items.length) return "<div><br></div>";
-      if (!line.some((token) => token.type === "tab")) {
-        const offset = Math.max(0, alignedPosition(properties.textAlign, containerWidth, cursor));
-        items.forEach((item) => { item.x += offset; });
-      }
-      return renderInlineImageRow(items, containerWidth, context);
-    }).join("");
+        return renderInlineImageRow(items, containerWidth, context);
+      })
+      .join("");
 
     const styles = paragraphPropertiesToCss(properties);
     delete styles["white-space"];
@@ -1989,25 +2027,35 @@
   }
 
   function renderInlineImageRow(items, containerWidth, context) {
-    const layoutWidth = Math.max(containerWidth, ...items.map((item) => item.x + item.width));
+    const layoutWidth = Math.max(
+      containerWidth,
+      ...items.map((item) => item.x + item.width),
+    );
     const cells = [];
     let cursor = 0;
     const cell = (width, content = "") => {
-      const percent = round(width / layoutWidth * 100, 4);
+      const percent = round((width / layoutWidth) * 100, 4);
       if (percent <= 0) return;
-      cells.push(`<td width="${percent}%" align="center" valign="bottom" ` +
-        `style="width:${percent}%;padding:0;border:0;vertical-align:bottom;` +
-        `text-align:center;font-size:0;line-height:0;">${content}</td>`);
+      cells.push(
+        `<td width="${percent}%" align="center" valign="bottom" ` +
+          `style="width:${percent}%;padding:0;border:0;vertical-align:bottom;` +
+          `text-align:center;font-size:0;line-height:0;">${content}</td>`,
+      );
     };
     for (const item of items) {
       cell(item.x - cursor);
-      cell(item.width, renderFloatingImageItem(item, item.x, item.x + item.width, context));
+      cell(
+        item.width,
+        renderFloatingImageItem(item, item.x, item.x + item.width, context),
+      );
       cursor = item.x + item.width;
     }
     cell(layoutWidth - cursor);
-    return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" ` +
+    return (
+      `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" ` +
       `style="width:100%;border-collapse:collapse;table-layout:fixed;">` +
-      `<tbody><tr>${cells.join("")}</tr></tbody></table>`;
+      `<tbody><tr>${cells.join("")}</tr></tbody></table>`
+    );
   }
 
   function alignedPosition(align, available, size) {
@@ -2032,11 +2080,16 @@
     const marginTop = twipsToEmu(page.marginTopTwips || 0);
     const pageWidth = twipsToEmu(page.pageWidthTwips || 12240);
     const pageHeight = twipsToEmu(page.pageHeightTwips || 15840);
-    const textWidth = twipsToEmu(page.textWidthTwips || emuToTwips(containerWidth));
+    const textWidth = twipsToEmu(
+      page.textWidthTwips || emuToTwips(containerWidth),
+    );
     const textHeight =
       pageHeight - marginTop - twipsToEmu(page.marginBottomTwips || 0);
     const indent = twipsToEmu(
-      Math.max(0, ptValueToTwips(context.currentParagraphProperties?.marginLeft)),
+      Math.max(
+        0,
+        ptValueToTwips(context.currentParagraphProperties?.marginLeft),
+      ),
     );
     const columnOrigin =
       marginLeft + twipsToEmu(context.currentContainerLeftTwips || 0);
@@ -2044,7 +2097,8 @@
     const columnWidth = twipsToEmu(
       context.currentContainerWidthTwips || emuToTwips(textWidth),
     );
-    const paragraphAlign = context.currentParagraphProperties?.textAlign || "left";
+    const paragraphAlign =
+      context.currentParagraphProperties?.textAlign || "left";
     const positionH = firstDirectChild(anchor, "positionH");
     const positionV = firstDirectChild(anchor, "positionV");
     const simplePosition = firstDirectChild(anchor, "simplePos");
@@ -2071,11 +2125,16 @@
       rightMargin: [marginLeft + textWidth, pageWidth - marginLeft - textWidth],
       column: [columnOrigin, columnWidth],
     };
-    const [horizontalOrigin, horizontalWidth] =
-      horizontalFrames[horizontalReference] || [outputOrigin, containerWidth];
-    const offsetH = Number(firstDirectChild(positionH, "posOffset")?.textContent);
+    const [horizontalOrigin, horizontalWidth] = horizontalFrames[
+      horizontalReference
+    ] || [outputOrigin, containerWidth];
+    const offsetH = Number(
+      firstDirectChild(positionH, "posOffset")?.textContent,
+    );
     const alignH = firstDirectChild(positionH, "align")?.textContent?.trim();
-    let x = horizontalOrigin - outputOrigin +
+    let x =
+      horizontalOrigin -
+      outputOrigin +
       (Number.isFinite(offsetH)
         ? offsetH
         : alignedPosition(alignH || paragraphAlign, horizontalWidth, width));
@@ -2083,7 +2142,8 @@
     // A character-relative image in an otherwise empty paragraph follows its
     // aligned insertion point. There is no text before it to measure.
     if (horizontalReference === "character" && context.imageOnlyParagraph) {
-      x = alignedPosition(paragraphAlign, containerWidth, width) +
+      x =
+        alignedPosition(paragraphAlign, containerWidth, width) +
         (Number.isFinite(offsetH) ? offsetH : 0);
     }
 
@@ -2096,14 +2156,21 @@
       bottomMargin: [textHeight, pageHeight - marginTop - textHeight],
     };
     const verticalFrame = verticalFrames[verticalReference];
-    const offsetV = Number(firstDirectChild(positionV, "posOffset")?.textContent);
+    const offsetV = Number(
+      firstDirectChild(positionV, "posOffset")?.textContent,
+    );
     const alignV = firstDirectChild(positionV, "align")?.textContent?.trim();
-    const y = (verticalFrame?.[0] || 0) + (Number.isFinite(offsetV)
-      ? offsetV
-      : alignedPosition(alignV, verticalFrame?.[1] || height, height));
+    const y =
+      (verticalFrame?.[0] || 0) +
+      (Number.isFinite(offsetV)
+        ? offsetV
+        : alignedPosition(alignV, verticalFrame?.[1] || height, height));
 
     return {
-      x, y, width, height,
+      x,
+      y,
+      width,
+      height,
       verticalReference: verticalFrame ? "page" : verticalReference,
     };
   }
@@ -2120,12 +2187,17 @@
       if (localName(parent) === "hyperlink") {
         const id = getWordAttribute(parent, "id");
         const anchor = getWordAttribute(parent, "anchor");
-        return context.relationships.get(id)?.target ||
-          (anchor ? `#${anchor}` : null);
+        return (
+          context.relationships.get(id)?.target ||
+          (anchor ? `#${anchor}` : null)
+        );
       }
       if (localName(parent) === "fldSimple") {
-        return (getWordAttribute(parent, "instr") || "")
-          .match(/HYPERLINK\s+"([^"]+)"/i)?.[1] || null;
+        return (
+          (getWordAttribute(parent, "instr") || "").match(
+            /HYPERLINK\s+"([^"]+)"/i,
+          )?.[1] || null
+        );
       }
       parent = parent.parentNode;
     }
@@ -2154,12 +2226,16 @@
     }
 
     const items = [];
-    const imageOnlyParagraph = anchors.length === 1 &&
+    const imageOnlyParagraph =
+      anchors.length === 1 &&
       !getOuterParagraphPlainText(paragraph) &&
       !getTopLevelDescendants(paragraph, "inline", "txbxContent").length;
 
     for (const anchor of anchors) {
-      const position = getAnchorPosition(anchor, { ...context, imageOnlyParagraph });
+      const position = getAnchorPosition(anchor, {
+        ...context,
+        imageOnlyParagraph,
+      });
 
       const txbxContent = firstDescendant(anchor, "txbxContent");
 
@@ -2199,7 +2275,8 @@
     const inlines = getTopLevelDescendants(paragraph, "inline", "txbxContent");
 
     const inlineWidth = inlines.reduce(
-      (sum, inline) => sum + (getDrawingDimensions(inline).widthEmu || 0), 0,
+      (sum, inline) => sum + (getDrawingDimensions(inline).widthEmu || 0),
+      0,
     );
     let inlineX = alignedPosition(
       context.currentParagraphProperties?.textAlign,
@@ -2441,13 +2518,12 @@
       "vertical-align": "top",
     };
 
-    const html = (
+    const html =
       `<img` +
       ` src="${escapeAttribute(url)}"` +
       ` alt="${escapeAttribute(item.alt || "")}"` +
       ` style="${escapeAttribute(cssString(styles))}"` +
-      `>`
-    );
+      `>`;
 
     return item.href
       ? `<a href="${escapeAttribute(item.href)}">${html}</a>`
@@ -2468,8 +2544,12 @@
 
       currentContainerWidthTwips: textboxWidthTwips,
 
-      currentContainerLeftTwips: (context.currentContainerLeftTwips || 0) +
-        Math.max(0, ptValueToTwips(context.currentParagraphProperties?.marginLeft)) +
+      currentContainerLeftTwips:
+        (context.currentContainerLeftTwips || 0) +
+        Math.max(
+          0,
+          ptValueToTwips(context.currentParagraphProperties?.marginLeft),
+        ) +
         emuToTwips(item.x),
 
       currentTableRowAnalysis: null,
@@ -2628,7 +2708,8 @@
       textStyles.margin = "0";
       textStyles["white-space"] = "pre-wrap";
       if (paragraphState.paragraphProperties.textIndent) {
-        textStyles["text-indent"] = paragraphState.paragraphProperties.textIndent;
+        textStyles["text-indent"] =
+          paragraphState.paragraphProperties.textIndent;
       }
       const text = inlineChildrenToHtml(paragraph, {
         ...context,
@@ -2667,21 +2748,28 @@
   }
 
   function hasParagraphLayoutBreak(paragraph) {
-    return descendants(paragraph, "sectPr").length > 0 ||
+    return (
+      descendants(paragraph, "sectPr").length > 0 ||
       descendants(paragraph, "lastRenderedPageBreak").length > 0 ||
       descendants(paragraph, "pageBreakBefore").some(isPropertyEnabled) ||
       descendants(paragraph, "br").some((br) =>
-        ["page", "column"].includes(getWordAttribute(br, "type")));
+        ["page", "column"].includes(getWordAttribute(br, "type")),
+      )
+    );
   }
 
   function getTextWrapping(anchor) {
-    return ["wrapSquare", "wrapTight", "wrapThrough"]
-      .map((name) => firstDirectChild(anchor, name)).find(Boolean) || null;
+    return (
+      ["wrapSquare", "wrapTight", "wrapThrough"]
+        .map((name) => firstDirectChild(anchor, name))
+        .find(Boolean) || null
+    );
   }
 
   function measureTextHeightTwips(html, widthTwips) {
     const probe = document.createElement("div");
-    probe.style.cssText = "all:initial;display:block;position:fixed;" +
+    probe.style.cssText =
+      "all:initial;display:block;position:fixed;" +
       "left:-100000px;top:0;visibility:hidden;pointer-events:none;" +
       `width:${widthTwips / 20}pt;font-family:Arial,sans-serif;font-size:11pt;`;
     probe.innerHTML = html;
@@ -2697,8 +2785,12 @@
     if (baseContext.skipDrawingLayout) return null;
     const paragraph = elements[startIndex];
     const anchors = getTopLevelDescendants(paragraph, "anchor", "txbxContent");
-    if (anchors.length !== 1 || !getTextWrapping(anchors[0]) ||
-        hasParagraphLayoutBreak(paragraph)) return null;
+    if (
+      anchors.length !== 1 ||
+      !getTextWrapping(anchors[0]) ||
+      hasParagraphLayoutBreak(paragraph)
+    )
+      return null;
 
     const state = resolveParagraphState(paragraph, baseContext);
     if (state.paragraphProperties.pageBreakBefore) return null;
@@ -2708,9 +2800,14 @@
     };
     const items = extractFloatingLayoutItems(paragraph, context);
     const item = items[0];
-    if (items.length !== 1 || item.type !== "image" || !item.height ||
-        !["paragraph", "line"].includes(item.verticalReference) ||
-        !context.imageUrls.has(item.relationId)) return null;
+    if (
+      items.length !== 1 ||
+      item.type !== "image" ||
+      !item.height ||
+      !["paragraph", "line"].includes(item.verticalReference) ||
+      !context.imageUrls.has(item.relationId)
+    )
+      return null;
 
     const containerWidth = twipsToEmu(getEffectiveContainerWidthTwips(context));
     const imageX = Math.max(0, item.x);
@@ -2718,13 +2815,18 @@
     // row to the newsletter width so the text/image proportions stay intact.
     const layoutWidth = Math.max(containerWidth, imageX + item.width);
     const wrapText = getWordAttribute(getTextWrapping(item.source), "wrapText");
-    const imageOnRight = wrapText === "left" ||
+    const imageOnRight =
+      wrapText === "left" ||
       (wrapText !== "right" && imageX + item.width / 2 > layoutWidth / 2);
-    const outsideGap = imageOnRight ? layoutWidth - imageX - item.width : imageX;
+    const outsideGap = imageOnRight
+      ? layoutWidth - imageX - item.width
+      : imageX;
     // A centered object can have text on both sides; a two-column row cannot
     // represent that case. Keep the existing drawing renderer for it.
     if (outsideGap > layoutWidth * 0.15) return null;
-    const distance = Number(getWordAttribute(item.source, imageOnRight ? "distL" : "distR"));
+    const distance = Number(
+      getWordAttribute(item.source, imageOnRight ? "distL" : "distR"),
+    );
     const gap = Number.isFinite(distance) ? Math.max(0, distance) : 0;
     const textWidth = layoutWidth - item.width - gap;
     if (textWidth <= layoutWidth * 0.15) return null;
@@ -2732,11 +2834,18 @@
     const textContext = {
       ...baseContext,
       skipDrawingLayout: true,
-      renderedFloatingSources: new Set([...(baseContext.renderedFloatingSources || []), item.source]),
+      renderedFloatingSources: new Set([
+        ...(baseContext.renderedFloatingSources || []),
+        item.source,
+      ]),
     };
     const anchorHtml = renderElements([paragraph], textContext);
-    const anchorHeight = measureTextHeightTwips(anchorHtml, emuToTwips(containerWidth));
-    const headingBeforeImage = getOuterParagraphPlainText(paragraph) &&
+    const anchorHeight = measureTextHeightTwips(
+      anchorHtml,
+      emuToTwips(containerWidth),
+    );
+    const headingBeforeImage =
+      getOuterParagraphPlainText(paragraph) &&
       emuToTwips(item.y) >= anchorHeight - 20;
     const columnContext = {
       ...textContext,
@@ -2748,20 +2857,32 @@
     let endIndex = startIndex + 1;
     let hasList = !!state.listInfo;
     let height = textParagraphs.length
-      ? measureTextHeightTwips(renderElements(textParagraphs, columnContext), emuToTwips(textWidth))
+      ? measureTextHeightTwips(
+          renderElements(textParagraphs, columnContext),
+          emuToTwips(textWidth),
+        )
       : 0;
-    const imageBottom = emuToTwips(Math.max(0, item.y) + item.height) -
+    const imageBottom =
+      emuToTwips(Math.max(0, item.y) + item.height) -
       (headingBeforeImage ? anchorHeight : 0);
 
     while (endIndex < elements.length) {
       const next = elements[endIndex];
-      if (localName(next) !== "p" || !getOuterParagraphPlainText(next) ||
-          hasParagraphLayoutBreak(next) || countImagesInElement(next) ||
-          descendants(next, "drawing").length) break;
+      if (
+        localName(next) !== "p" ||
+        !getOuterParagraphPlainText(next) ||
+        hasParagraphLayoutBreak(next) ||
+        countImagesInElement(next) ||
+        descendants(next, "drawing").length
+      )
+        break;
       const nextState = resolveParagraphState(next, baseContext);
-      if (nextState.paragraphProperties.pageBreakBefore ||
-          nextState.paragraphProperties.outlineLevel < 9 ||
-          nextState.paragraphProperties.textAlign === "center") break;
+      if (
+        nextState.paragraphProperties.pageBreakBefore ||
+        nextState.paragraphProperties.outlineLevel < 9 ||
+        nextState.paragraphProperties.textAlign === "center"
+      )
+        break;
       if (hasList && !nextState.listInfo) break;
       // Keep a contiguous list together, even when Word changes numId midway.
       // For prose, only include paragraphs that start alongside the image.
@@ -2771,27 +2892,46 @@
       endIndex++;
       if (!hasList) {
         height = measureTextHeightTwips(
-          renderElements(textParagraphs, columnContext), emuToTwips(textWidth),
+          renderElements(textParagraphs, columnContext),
+          emuToTwips(textWidth),
         );
       }
     }
     if (!textParagraphs.some((p) => getOuterParagraphPlainText(p))) return null;
 
     const textHtml = renderElements(textParagraphs, columnContext);
-    const topGap = Math.max(0, emuToPt(item.y) - (headingBeforeImage ? anchorHeight / 20 : 0));
-    const imageHtml = renderFloatingImageItem(item, item.x, item.x + item.width, context);
+    const topGap = Math.max(
+      0,
+      emuToPt(item.y) - (headingBeforeImage ? anchorHeight / 20 : 0),
+    );
+    const imageHtml = renderFloatingImageItem(
+      item,
+      item.x,
+      item.x + item.width,
+      context,
+    );
     const cell = (width, content, align, paddingTop = 0) => {
-      const percent = round(width / layoutWidth * 100, 4);
-      return `<td width="${percent}%" align="${align}" valign="top" ` +
+      const percent = round((width / layoutWidth) * 100, 4);
+      return (
+        `<td width="${percent}%" align="${align}" valign="top" ` +
         `style="width:${percent}%;vertical-align:top;text-align:${align};` +
-        `padding:${round(paddingTop, 2)}pt 0 0;border:0;">${content}</td>`;
+        `padding:${round(paddingTop, 2)}pt 0 0;border:0;">${content}</td>`
+      );
     };
     const textCell = cell(textWidth, textHtml, "left");
     const gapCell = gap > 0 ? cell(gap, "", "left") : "";
-    const imageCell = cell(item.width, imageHtml, imageOnRight ? "right" : "left", topGap);
-    const table = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" ` +
+    const imageCell = cell(
+      item.width,
+      imageHtml,
+      imageOnRight ? "right" : "left",
+      topGap,
+    );
+    const table =
+      `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" ` +
       `style="width:100%;border-collapse:collapse;table-layout:fixed;"><tbody><tr>` +
-      (imageOnRight ? textCell + gapCell + imageCell : imageCell + gapCell + textCell) +
+      (imageOnRight
+        ? textCell + gapCell + imageCell
+        : imageCell + gapCell + textCell) +
       `</tr></tbody></table>`;
     return { html: (headingBeforeImage ? anchorHtml : "") + table, endIndex };
   }
@@ -2799,7 +2939,10 @@
   function getFloatingParagraphGroup(elements, startIndex, baseContext) {
     if (baseContext.skipDrawingLayout) return null;
     const paragraph = elements[startIndex];
-    if (getOuterParagraphPlainText(paragraph) || hasParagraphLayoutBreak(paragraph)) {
+    if (
+      getOuterParagraphPlainText(paragraph) ||
+      hasParagraphLayoutBreak(paragraph)
+    ) {
       return null;
     }
     const state = resolveParagraphState(paragraph, baseContext);
@@ -2815,10 +2958,13 @@
     // Equal paragraph-relative offsets can belong to entirely different rows.
     const containerWidth = twipsToEmu(getEffectiveContainerWidthTwips(context));
     const isComparable = (item) =>
-      item.type === "image" && item.verticalReference === "page" &&
-      item.x >= 0 && item.x + item.width <= containerWidth;
+      item.type === "image" &&
+      item.verticalReference === "page" &&
+      item.x >= 0 &&
+      item.x + item.width <= containerWidth;
     if (
-      !items.length || !items.every(isComparable) ||
+      !items.length ||
+      !items.every(isComparable) ||
       groupFloatingItemsIntoRows(items).length !== 1
     ) {
       return null;
@@ -2828,29 +2974,36 @@
     for (let index = endIndex; index < elements.length; index++) {
       const next = elements[index];
       if (
-        localName(next) !== "p" || getOuterParagraphPlainText(next) ||
+        localName(next) !== "p" ||
+        getOuterParagraphPlainText(next) ||
         hasParagraphLayoutBreak(next)
       ) {
         break;
       }
       const nextState = resolveParagraphState(next, baseContext);
       if (
-        nextState.listInfo || nextState.paragraphProperties.pageBreakBefore ||
-        ["marginLeft", "marginRight"].some((key) =>
-          (nextState.paragraphProperties[key] || "0pt") !==
-          (state.paragraphProperties[key] || "0pt"))
+        nextState.listInfo ||
+        nextState.paragraphProperties.pageBreakBefore ||
+        ["marginLeft", "marginRight"].some(
+          (key) =>
+            (nextState.paragraphProperties[key] || "0pt") !==
+            (state.paragraphProperties[key] || "0pt"),
+        )
       ) {
         break;
       }
       const nextItems = extractFloatingLayoutItems(next, {
-        ...baseContext, currentParagraphProperties: nextState.paragraphProperties,
+        ...baseContext,
+        currentParagraphProperties: nextState.paragraphProperties,
       });
       if (!nextItems.length) {
         // Allow one blank anchor between matching images. A long blank run
         // may move the next image to another page, even without a page marker.
         if (
-          index > endIndex || countImagesInElement(next) ||
-          descendants(next, "drawing").length || descendants(next, "br").length
+          index > endIndex ||
+          countImagesInElement(next) ||
+          descendants(next, "drawing").length ||
+          descendants(next, "br").length
         ) {
           break;
         }
@@ -2862,9 +3015,12 @@
       const combined = [...items, ...nextItems];
       const rows = groupFloatingItemsIntoRows(combined);
       if (
-        rows.length !== 1 || rows[0].items.some((item, itemIndex, rowItems) =>
-          itemIndex > 0 &&
-          rowItems[itemIndex - 1].x + rowItems[itemIndex - 1].width > item.x)
+        rows.length !== 1 ||
+        rows[0].items.some(
+          (item, itemIndex, rowItems) =>
+            itemIndex > 0 &&
+            rowItems[itemIndex - 1].x + rowItems[itemIndex - 1].width > item.x,
+        )
       ) {
         break;
       }
@@ -2872,10 +3028,17 @@
       endIndex = index + 1;
     }
 
-    return endIndex > startIndex + 1 ? {
-      html: renderFloatingParagraphLayout(paragraph, baseContext, state, items),
-      endIndex,
-    } : null;
+    return endIndex > startIndex + 1
+      ? {
+          html: renderFloatingParagraphLayout(
+            paragraph,
+            baseContext,
+            state,
+            items,
+          ),
+          endIndex,
+        }
+      : null;
   }
 
   // =========================================================
@@ -2883,9 +3046,12 @@
   // =========================================================
 
   function drawingToHtml(drawing, context) {
-    if (context.renderedFloatingSources && [...context.renderedFloatingSources].some(
-      (source) => drawing === source || drawing.contains(source),
-    )) {
+    if (
+      context.renderedFloatingSources &&
+      [...context.renderedFloatingSources].some(
+        (source) => drawing === source || drawing.contains(source),
+      )
+    ) {
       return "";
     }
 
@@ -3215,11 +3381,17 @@
       currentParagraphProperties: state.paragraphProperties,
     };
 
-    const inlineImageHtml = baseContext.skipDrawingLayout ? null :
-      renderInlineImageParagraph(paragraph, baseContext, state);
-    if (!baseContext.skipDrawingLayout &&
-        (inlineImageHtml !== null || shouldRenderFloatingLayout(paragraph, floatingContext))) {
-      const html = inlineImageHtml ?? renderFloatingParagraphLayout(paragraph, baseContext, state);
+    const inlineImageHtml = baseContext.skipDrawingLayout
+      ? null
+      : renderInlineImageParagraph(paragraph, baseContext, state);
+    if (
+      !baseContext.skipDrawingLayout &&
+      (inlineImageHtml !== null ||
+        shouldRenderFloatingLayout(paragraph, floatingContext))
+    ) {
+      const html =
+        inlineImageHtml ??
+        renderFloatingParagraphLayout(paragraph, baseContext, state);
       return {
         html,
 
@@ -3689,7 +3861,11 @@
           continue;
         }
 
-        const floatingGroup = getFloatingParagraphGroup(elements, index, context);
+        const floatingGroup = getFloatingParagraphGroup(
+          elements,
+          index,
+          context,
+        );
         if (floatingGroup) {
           output.push(floatingGroup.html);
           index = floatingGroup.endIndex;
@@ -3710,8 +3886,12 @@
               break;
             }
 
-            if (!context.skipDrawingLayout &&
-                getTopLevelDescendants(next, "anchor", "txbxContent").some(getTextWrapping)) {
+            if (
+              !context.skipDrawingLayout &&
+              getTopLevelDescendants(next, "anchor", "txbxContent").some(
+                getTextWrapping,
+              )
+            ) {
               break;
             }
 
@@ -3798,12 +3978,19 @@
     const gridWidths = getTableGridWidths(table);
     const tableProperties = firstDirectChild(table, "tblPr");
     const tableAlignment = getWordAttribute(
-      firstDirectChild(tableProperties, "jc"), "val",
+      firstDirectChild(tableProperties, "jc"),
+      "val",
     );
-    const tableLeftTwips = (context.currentContainerLeftTwips || 0) +
-      Math.max(0, alignedPosition(
-        tableAlignment, getEffectiveContainerWidthTwips(context), tableWidthTwips,
-      ));
+    const tableLeftTwips =
+      (context.currentContainerLeftTwips || 0) +
+      Math.max(
+        0,
+        alignedPosition(
+          tableAlignment,
+          getEffectiveContainerWidthTwips(context),
+          tableWidthTwips,
+        ),
+      );
 
     for (const row of directChildren(table, "tr")) {
       const rowAnalysis = analyzeTableRow(row);
@@ -3826,8 +4013,10 @@
         cells.push(tableCellToHtml(cell, rowContext, gridWidths, gridIndex));
 
         const padding = getCellPaddingTwips(cell);
-        cellLeftTwips += getCellWidthTwips(cell, rowContext, gridWidths, gridIndex) +
-          padding.left + padding.right;
+        cellLeftTwips +=
+          getCellWidthTwips(cell, rowContext, gridWidths, gridIndex) +
+          padding.left +
+          padding.right;
 
         gridIndex += getCellColspan(cell);
       }
