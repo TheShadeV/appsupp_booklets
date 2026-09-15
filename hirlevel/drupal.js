@@ -1,7 +1,7 @@
 (async () => {
   const APP_ID = "docx-drupal-converter-panel";
   // Update this fixed timestamp when releasing a new converter version.
-  const APP_VERSION = "2026.09.15. 09:52";
+  const APP_VERSION = "2026.09.15. 10:14";
   const JSZIP_URL =
     "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";
 
@@ -703,6 +703,11 @@
     const spacing = firstDirectChild(pPr, "spacing");
 
     const numPr = firstDirectChild(pPr, "numPr");
+
+    const outlineLevel = firstDirectChild(pPr, "outlineLvl");
+    if (outlineLevel) {
+      result.outlineLevel = Number(getWordAttribute(outlineLevel, "val"));
+    }
 
     const tabs = firstDirectChild(pPr, "tabs");
     if (tabs) {
@@ -2669,7 +2674,130 @@
         ["page", "column"].includes(getWordAttribute(br, "type")));
   }
 
+  function getTextWrapping(anchor) {
+    return ["wrapSquare", "wrapTight", "wrapThrough"]
+      .map((name) => firstDirectChild(anchor, name)).find(Boolean) || null;
+  }
+
+  function measureTextHeightTwips(html, widthTwips) {
+    const probe = document.createElement("div");
+    probe.style.cssText = "all:initial;display:block;position:fixed;" +
+      "left:-100000px;top:0;visibility:hidden;pointer-events:none;" +
+      `width:${widthTwips / 20}pt;font-family:Arial,sans-serif;font-size:11pt;`;
+    probe.innerHTML = html;
+    document.body.appendChild(probe);
+    try {
+      return probe.getBoundingClientRect().height * 15;
+    } finally {
+      probe.remove();
+    }
+  }
+
+  function getWrappedImageGroup(elements, startIndex, baseContext) {
+    if (baseContext.skipDrawingLayout) return null;
+    const paragraph = elements[startIndex];
+    const anchors = getTopLevelDescendants(paragraph, "anchor", "txbxContent");
+    if (anchors.length !== 1 || !getTextWrapping(anchors[0]) ||
+        hasParagraphLayoutBreak(paragraph)) return null;
+
+    const state = resolveParagraphState(paragraph, baseContext);
+    if (state.paragraphProperties.pageBreakBefore) return null;
+    const context = {
+      ...baseContext,
+      currentParagraphProperties: state.paragraphProperties,
+    };
+    const items = extractFloatingLayoutItems(paragraph, context);
+    const item = items[0];
+    if (items.length !== 1 || item.type !== "image" || !item.height ||
+        !["paragraph", "line"].includes(item.verticalReference) ||
+        !context.imageUrls.has(item.relationId)) return null;
+
+    const containerWidth = twipsToEmu(getEffectiveContainerWidthTwips(context));
+    const imageX = Math.max(0, item.x);
+    // Word permits a wrapped image to extend into a margin. Scale the whole
+    // row to the newsletter width so the text/image proportions stay intact.
+    const layoutWidth = Math.max(containerWidth, imageX + item.width);
+    const wrapText = getWordAttribute(getTextWrapping(item.source), "wrapText");
+    const imageOnRight = wrapText === "left" ||
+      (wrapText !== "right" && imageX + item.width / 2 > layoutWidth / 2);
+    const outsideGap = imageOnRight ? layoutWidth - imageX - item.width : imageX;
+    // A centered object can have text on both sides; a two-column row cannot
+    // represent that case. Keep the existing drawing renderer for it.
+    if (outsideGap > layoutWidth * 0.15) return null;
+    const distance = Number(getWordAttribute(item.source, imageOnRight ? "distL" : "distR"));
+    const gap = Number.isFinite(distance) ? Math.max(0, distance) : 0;
+    const textWidth = layoutWidth - item.width - gap;
+    if (textWidth <= layoutWidth * 0.15) return null;
+
+    const textContext = {
+      ...baseContext,
+      skipDrawingLayout: true,
+      renderedFloatingSources: new Set([...(baseContext.renderedFloatingSources || []), item.source]),
+    };
+    const anchorHtml = renderElements([paragraph], textContext);
+    const anchorHeight = measureTextHeightTwips(anchorHtml, emuToTwips(containerWidth));
+    const headingBeforeImage = getOuterParagraphPlainText(paragraph) &&
+      emuToTwips(item.y) >= anchorHeight - 20;
+    const columnContext = {
+      ...textContext,
+      currentContainerWidthTwips: emuToTwips(textWidth),
+      currentParagraphProperties: {},
+      inWrappedTextColumn: true,
+    };
+    const textParagraphs = headingBeforeImage ? [] : [paragraph];
+    let endIndex = startIndex + 1;
+    let hasList = !!state.listInfo;
+    let height = textParagraphs.length
+      ? measureTextHeightTwips(renderElements(textParagraphs, columnContext), emuToTwips(textWidth))
+      : 0;
+    const imageBottom = emuToTwips(Math.max(0, item.y) + item.height) -
+      (headingBeforeImage ? anchorHeight : 0);
+
+    while (endIndex < elements.length) {
+      const next = elements[endIndex];
+      if (localName(next) !== "p" || !getOuterParagraphPlainText(next) ||
+          hasParagraphLayoutBreak(next) || countImagesInElement(next) ||
+          descendants(next, "drawing").length) break;
+      const nextState = resolveParagraphState(next, baseContext);
+      if (nextState.paragraphProperties.pageBreakBefore ||
+          nextState.paragraphProperties.outlineLevel < 9 ||
+          nextState.paragraphProperties.textAlign === "center") break;
+      if (hasList && !nextState.listInfo) break;
+      // Keep a contiguous list together, even when Word changes numId midway.
+      // For prose, only include paragraphs that start alongside the image.
+      if (!hasList && height >= imageBottom) break;
+      textParagraphs.push(next);
+      hasList ||= !!nextState.listInfo;
+      endIndex++;
+      if (!hasList) {
+        height = measureTextHeightTwips(
+          renderElements(textParagraphs, columnContext), emuToTwips(textWidth),
+        );
+      }
+    }
+    if (!textParagraphs.some((p) => getOuterParagraphPlainText(p))) return null;
+
+    const textHtml = renderElements(textParagraphs, columnContext);
+    const topGap = Math.max(0, emuToPt(item.y) - (headingBeforeImage ? anchorHeight / 20 : 0));
+    const imageHtml = renderFloatingImageItem(item, item.x, item.x + item.width, context);
+    const cell = (width, content, align, paddingTop = 0) => {
+      const percent = round(width / layoutWidth * 100, 4);
+      return `<td width="${percent}%" align="${align}" valign="top" ` +
+        `style="width:${percent}%;vertical-align:top;text-align:${align};` +
+        `padding:${round(paddingTop, 2)}pt 0 0;border:0;">${content}</td>`;
+    };
+    const textCell = cell(textWidth, textHtml, "left");
+    const gapCell = gap > 0 ? cell(gap, "", "left") : "";
+    const imageCell = cell(item.width, imageHtml, imageOnRight ? "right" : "left", topGap);
+    const table = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" ` +
+      `style="width:100%;border-collapse:collapse;table-layout:fixed;"><tbody><tr>` +
+      (imageOnRight ? textCell + gapCell + imageCell : imageCell + gapCell + textCell) +
+      `</tr></tbody></table>`;
+    return { html: (headingBeforeImage ? anchorHtml : "") + table, endIndex };
+  }
+
   function getFloatingParagraphGroup(elements, startIndex, baseContext) {
+    if (baseContext.skipDrawingLayout) return null;
     const paragraph = elements[startIndex];
     if (getOuterParagraphPlainText(paragraph) || hasParagraphLayoutBreak(paragraph)) {
       return null;
@@ -3087,8 +3215,10 @@
       currentParagraphProperties: state.paragraphProperties,
     };
 
-    const inlineImageHtml = renderInlineImageParagraph(paragraph, baseContext, state);
-    if (inlineImageHtml !== null || shouldRenderFloatingLayout(paragraph, floatingContext)) {
+    const inlineImageHtml = baseContext.skipDrawingLayout ? null :
+      renderInlineImageParagraph(paragraph, baseContext, state);
+    if (!baseContext.skipDrawingLayout &&
+        (inlineImageHtml !== null || shouldRenderFloatingLayout(paragraph, floatingContext))) {
       const html = inlineImageHtml ?? renderFloatingParagraphLayout(paragraph, baseContext, state);
       return {
         html,
@@ -3157,6 +3287,13 @@
 
     if (state.listInfo) {
       delete listCss["text-indent"];
+
+      if (baseContext.inWrappedTextColumn) {
+        // The cell has already moved the text past the image. Reapplying
+        // Word's page-based list indent would squeeze it a second time.
+        delete listCss["margin-left"];
+        delete listCss["margin-right"];
+      }
 
       listCss["list-style-position"] = "outside";
     }
@@ -3545,6 +3682,13 @@
       const name = localName(child);
 
       if (name === "p") {
+        const wrappedGroup = getWrappedImageGroup(elements, index, context);
+        if (wrappedGroup) {
+          output.push(wrappedGroup.html);
+          index = wrappedGroup.endIndex;
+          continue;
+        }
+
         const floatingGroup = getFloatingParagraphGroup(elements, index, context);
         if (floatingGroup) {
           output.push(floatingGroup.html);
@@ -3563,6 +3707,11 @@
             const next = elements[nextIndex];
 
             if (localName(next) !== "p") {
+              break;
+            }
+
+            if (!context.skipDrawingLayout &&
+                getTopLevelDescendants(next, "anchor", "txbxContent").some(getTextWrapping)) {
               break;
             }
 
