@@ -18,7 +18,7 @@
   // ✓ dinamikus FullCalendar magasság
   // ✓ dinamikus 0–24 órás időrács
   // ✓ drag közben teljes layout-freeze
-  // ✓ resize / zoom / sidebar támogatás
+  // ✓ méretezés induláskor és window resize esetén
   // ============================================================
 
   // ============================================================
@@ -30,6 +30,8 @@
 
     verifyAttempts: 4,
     verifyDelayMs: 300,
+
+    refreshIntervalMs: 60_000,
 
     bottomGap: 8,
 
@@ -82,7 +84,14 @@
   let isCalendarDragging = false;
   let isCalendarLayouting = false;
 
+  let pendingEventSaves = 0;
+  let isCalendarFetching = false;
+
   let resizeTimer = null;
+  let pendingCalendarFit = false;
+
+  let lastViewportWidth = window.innerWidth;
+  let lastViewportHeight = window.innerHeight;
 
   let lastCalendarHeight = null;
   let lastAppliedRowHeight = null;
@@ -503,6 +512,8 @@
 
     const oldEnd = event.end ? event.end.clone() : null;
 
+    pendingEventSaves++;
+
     try {
       event.start = event.start.clone().add(amount, unit);
 
@@ -527,6 +538,8 @@
       console.error("[PTE] Áthelyezési hiba:", error);
 
       toast("Mentési hiba.\n\n" + error.message, "error", 7000);
+    } finally {
+      pendingEventSaves--;
     }
   }
 
@@ -585,6 +598,8 @@
 
     const durationMs = event.end ? event.end.diff(event.start) : null;
 
+    pendingEventSaves++;
+
     try {
       event.start = newStart;
 
@@ -609,6 +624,8 @@
       console.error("[PTE] Pontos időpont mentési hiba:", error);
 
       toast("Mentési hiba.\n\n" + error.message, "error", 7000);
+    } finally {
+      pendingEventSaves--;
     }
   }
 
@@ -1012,6 +1029,150 @@
   window.addEventListener("scroll", hideMenu, true);
 
   // ============================================================
+  // ESEMÉNYADATOK FRISSÍTÉSE PERCENKÉNT
+  // ============================================================
+
+  function makeEventEditable(event) {
+    if (!event || typeof event !== "object") {
+      return event;
+    }
+
+    return {
+      ...event,
+      editable: true,
+      startEditable: true,
+      durationEditable: false,
+    };
+  }
+
+  function editableTransform(originalTransform) {
+    return function (event, ...args) {
+      const transformed =
+        typeof originalTransform === "function"
+          ? originalTransform.call(this, event, ...args)
+          : event;
+
+      return makeEventEditable(transformed);
+    };
+  }
+
+  const originalLoading = $calendar.fullCalendar("option", "loading");
+
+  $calendar.fullCalendar("option", "loading", function (loading, ...args) {
+    isCalendarFetching = loading;
+
+    if (typeof originalLoading === "function") {
+      return originalLoading.call(this, loading, ...args);
+    }
+  });
+
+  $calendar.fullCalendar(
+    "option",
+    "eventDataTransform",
+    editableTransform($calendar.fullCalendar("option", "eventDataTransform")),
+  );
+
+  const sourceTransforms = new WeakMap();
+  let warnedAboutStaticSources = false;
+
+  function prepareEventSources() {
+    const sources = $calendar.fullCalendar("getEventSources");
+
+    if (!Array.isArray(sources)) {
+      throw new Error("A naptár eseményforrásai nem kérdezhetők le.");
+    }
+
+    let refreshableSources = 0;
+
+    for (const source of sources) {
+      // A forrásszintű transzformáció a globális után fut; az eredeti
+      // átalakítást megtartva itt is megőrizzük a szerkeszthetőséget.
+      if (source && typeof source === "object") {
+        const originalTransform = source.eventDataTransform;
+
+        if (
+          typeof originalTransform === "function" &&
+          sourceTransforms.get(source) !== originalTransform
+        ) {
+          const transform = editableTransform(originalTransform);
+          source.eventDataTransform = transform;
+          sourceTransforms.set(source, transform);
+        }
+      }
+
+      // FullCalendar 3 belső forrásai getPrimitive()-vel adják vissza
+      // az eredeti URL-t, függvényt vagy statikus eseménytömböt.
+      const primitive =
+        typeof source?.getPrimitive === "function"
+          ? source.getPrimitive()
+          : source;
+
+      if (
+        typeof primitive === "string" ||
+        typeof primitive === "function" ||
+        typeof source?.url === "string" ||
+        typeof source?.events === "function" ||
+        source?.googleCalendarId
+      ) {
+        refreshableSources++;
+      }
+    }
+
+    if (
+      (!sources.length || refreshableSources < sources.length) &&
+      !warnedAboutStaticSources
+    ) {
+      warnedAboutStaticSources = true;
+      console.warn(
+        "[PTE] A naptár statikus vagy hiányzó eseményforrást tartalmaz. " +
+          "Ezekből nem kérhetők le friss szerveradatok; ehhez URL vagy " +
+          "adatlekérő függvény szükséges az oldalon.",
+      );
+    }
+
+    return refreshableSources > 0;
+  }
+
+  function refreshCalendarEvents() {
+    if ($calendar[0]?.isConnected === false) {
+      clearInterval(eventRefreshTimer);
+      return;
+    }
+
+    // A nyitott menü is egy konkrét eseménypéldányra hivatkozik.
+    if (
+      isCalendarDragging ||
+      isCalendarLayouting ||
+      pendingEventSaves > 0 ||
+      isCalendarFetching ||
+      selectedEvent
+    ) {
+      return;
+    }
+
+    try {
+      if (prepareEventSources()) {
+        // Adatlekérés és eseményrajzolás; nem indít saját méretezést.
+        $calendar.fullCalendar("refetchEvents");
+      }
+    } catch (error) {
+      console.error("[PTE] A naptáresemények frissítése sikertelen:", error);
+    }
+  }
+
+  // Már a következő kézi navigáláskor is az új eseményekre érvényes.
+  try {
+    prepareEventSources();
+  } catch (error) {
+    console.warn("[PTE] Az eseményforrások ellenőrzése sikertelen:", error);
+  }
+
+  const eventRefreshTimer = setInterval(
+    refreshCalendarEvents,
+    CONFIG.refreshIntervalMs,
+  );
+
+  // ============================================================
   // FULLCALENDAR ALAPBEÁLLÍTÁSOK
   // ============================================================
 
@@ -1051,13 +1212,10 @@
 
       console.log("[PTE] Drag stop - layout feloldva");
 
-      // A húzás után kicsivel újraigazítjuk,
-      // de csak miután a drag teljesen befejeződött.
-      setTimeout(() => {
-        if (!isCalendarDragging) {
-          fitCalendarToViewport(false);
-        }
-      }, 250);
+      // Csak a húzás alatt elhalasztott ablakméretezést pótoljuk.
+      if (pendingCalendarFit) {
+        scheduleCalendarFit();
+      }
     },
   );
 
@@ -1073,6 +1231,8 @@
       const newTime = formatSendingTime(event.start);
 
       toast(`Mentés...\n${newTime}`, "loading", 10000);
+
+      pendingEventSaves++;
 
       try {
         const result = await saveEvent(event);
@@ -1093,6 +1253,8 @@
           "error",
           7000,
         );
+      } finally {
+        pendingEventSaves--;
       }
     },
   );
@@ -1116,6 +1278,11 @@
   // ============================================================
   // DINAMIKUS LAYOUT
   // ============================================================
+
+  // Lapozáskor az új DOM is ugyanazokat a már kiszámolt méreteket kapja.
+  // Ehhez nincs szükség új mérésre vagy újraméretezési időzítőre.
+  const timeGridStyle = document.createElement("style");
+  document.head.appendChild(timeGridStyle);
 
   function findFooter() {
     return document.querySelector(
@@ -1195,6 +1362,21 @@
     try {
       lastAppliedRowHeight = rowHeight;
 
+      timeGridStyle.textContent = `
+        ${CONFIG.calendarSelector} .fc-time-grid-container {
+          overflow-y: ${needsScroll ? "auto" : "hidden"} !important;
+        }
+        ${CONFIG.calendarSelector} .fc-slats,
+        ${CONFIG.calendarSelector} .fc-slats > table {
+          height: ${totalGridHeight}px;
+        }
+        ${CONFIG.calendarSelector} .fc-slats tbody > tr,
+        ${CONFIG.calendarSelector} .fc-slats tbody > tr > td {
+          height: ${rowHeight}px;
+          min-height: ${rowHeight}px;
+        }
+      `;
+
       for (const row of rows) {
         row.style.height = `${rowHeight}px`;
 
@@ -1233,6 +1415,10 @@
     } finally {
       requestAnimationFrame(() => {
         isCalendarLayouting = false;
+
+        if (pendingCalendarFit && !isCalendarDragging) {
+          scheduleCalendarFit();
+        }
       });
     }
   }
@@ -1316,9 +1502,12 @@
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        if (!isCalendarDragging) {
-          stretchTimeGrid(force);
+        if (isCalendarDragging) {
+          pendingCalendarFit = true;
+          return;
         }
+
+        stretchTimeGrid(force);
       });
     });
   }
@@ -1327,18 +1516,19 @@
   // DEBOUNCE
   // ============================================================
 
-  function scheduleCalendarFit(delay = 100, force = false) {
-    if (isCalendarDragging) {
-      return;
-    }
+  function scheduleCalendarFit() {
+    pendingCalendarFit = true;
 
     clearTimeout(resizeTimer);
 
     resizeTimer = setTimeout(() => {
-      if (!isCalendarDragging) {
-        fitCalendarToViewport(force);
+      resizeTimer = null;
+
+      if (!isCalendarDragging && !isCalendarLayouting) {
+        pendingCalendarFit = false;
+        fitCalendarToViewport(true);
       }
-    }, delay);
+    }, 120);
   }
 
   // ============================================================
@@ -1348,94 +1538,19 @@
   window.addEventListener(
     "resize",
 
-    () => {
-      scheduleCalendarFit(120, true);
-    },
-  );
-
-  // ============================================================
-  // ORIENTATION
-  // ============================================================
-
-  window.addEventListener(
-    "orientationchange",
-
-    () => {
-      scheduleCalendarFit(250, true);
-    },
-  );
-
-  // ============================================================
-  // SIDEBAR / ADMINLTE
-  //
-  // SZÁNDÉKOSAN NINCS ResizeObserver.
-  // ============================================================
-
-  if (typeof MutationObserver !== "undefined") {
-    const bodyObserver = new MutationObserver((mutations) => {
-      if (isCalendarDragging) {
+    (event) => {
+      if (
+        event.target !== window ||
+        (window.innerWidth === lastViewportWidth &&
+          window.innerHeight === lastViewportHeight)
+      ) {
         return;
       }
 
-      const classChanged = mutations.some(
-        (mutation) =>
-          mutation.type === "attributes" && mutation.attributeName === "class",
-      );
+      lastViewportWidth = window.innerWidth;
+      lastViewportHeight = window.innerHeight;
 
-      if (!classChanged) {
-        return;
-      }
-
-      scheduleCalendarFit(100, true);
-
-      // Sidebar animáció vége
-      setTimeout(() => {
-        if (!isCalendarDragging) {
-          fitCalendarToViewport(true);
-        }
-      }, 350);
-    });
-
-    bodyObserver.observe(document.body, {
-      attributes: true,
-
-      attributeFilter: ["class"],
-    });
-
-    window.__PTE_CALENDAR_BODY_OBSERVER__ = bodyObserver;
-  }
-
-  // ============================================================
-  // NAPTÁR NAVIGÁCIÓ
-  // ============================================================
-
-  jq(document).on(
-    "click.__pteCalendarFit",
-
-    [
-      `${CONFIG.calendarSelector} .fc-prev-button`,
-      `${CONFIG.calendarSelector} .fc-next-button`,
-      `${CONFIG.calendarSelector} .fc-today-button`,
-      `${CONFIG.calendarSelector} .fc-agendaDay-button`,
-      `${CONFIG.calendarSelector} .fc-agendaWeek-button`,
-      `${CONFIG.calendarSelector} .fc-month-button`,
-    ].join(","),
-
-    () => {
-      if (isCalendarDragging) {
-        return;
-      }
-
-      // Új nézetnél új DOM-sorok jönnek létre.
-      lastAppliedRowHeight = null;
-
-      scheduleCalendarFit(150, true);
-
-      setTimeout(() => {
-        if (!isCalendarDragging) {
-          fitCalendarToViewport(true);
-        }
-      }, 350);
+      scheduleCalendarFit();
     },
   );
 
@@ -1443,13 +1558,7 @@
   // ELSŐ MÉRETEZÉS
   // ============================================================
 
-  setTimeout(() => {
-    fitCalendarToViewport(true);
-  }, 120);
-
-  setTimeout(() => {
-    fitCalendarToViewport(true);
-  }, 450);
+  scheduleCalendarFit();
 
   // ============================================================
   // DIAGNOSZTIKA
@@ -1490,9 +1599,9 @@ DINAMIKUS LAYOUT
   kitölti az elérhető magasságot
   0–24 órás rács dinamikus
   kis ablaknál belső scroll
-  resize / zoom
-  sidebar támogatás
-  nincs ResizeObserver`,
+  egyszeri kezdeti méretezés
+  utána csak window resize / zoom
+  eseményfrissítés percenként`,
     "color:#00a000;font-weight:bold;font-size:14px",
   );
 
