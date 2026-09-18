@@ -100,6 +100,9 @@
   let lastCalendarHeight = null;
   let lastAppliedRowHeight = null;
 
+  let calendarAppearanceColors = null;
+  let newsletterListPanel = null;
+
   // ============================================================
   // SEGÉDEK
   // ============================================================
@@ -998,10 +1001,10 @@
   // SHIFT + BAL KLIKK
   // ============================================================
 
-  function getNavigationUrl(value) {
+  function getNavigationUrl(value, baseUrl = document.baseURI) {
     if (typeof value !== "string" || !value.trim() || value.trim().startsWith("#")) return null;
     try {
-      const url = new URL(value, document.baseURI);
+      const url = new URL(value, baseUrl);
       if (url.protocol !== "http:" && url.protocol !== "https:") return null;
       if (url.hash && url.origin === location.origin &&
           url.pathname === location.pathname && url.search === location.search) return null;
@@ -1018,12 +1021,28 @@
       /kijelentkez|\blog\s*out\b|\bsign\s*out\b/i.test(label);
   }
 
+  function isNewsletterListUrl(url) {
+    return url && url.origin === location.origin &&
+      /^\/news-letters(?:\/index)?\/?$/.test(url.pathname);
+  }
+
+  function isNewsletterListMenuLink(link, url) {
+    return isNewsletterListUrl(url) && Boolean(link.closest(".main-sidebar"));
+  }
+
   function installNewTabLinks() {
     function prepareLink(link) {
       const url = getNavigationUrl(link.getAttribute("href"));
       if (!url) return false;
       if (isLogoutLink(link, url)) {
         if (link.target !== "_self") link.target = "_self";
+        return false;
+      }
+      if (isNewsletterListMenuLink(link, url)) {
+        if (link.target !== "_self") link.target = "_self";
+        link.setAttribute("aria-haspopup", "dialog");
+        link.setAttribute("aria-controls", "__pte_newsletter_list");
+        link.setAttribute("data-pjax", "0");
         return false;
       }
       if (link.matches("[data-toggle], [data-bs-toggle], [data-widget], .dropdown-toggle, [role=button]") ||
@@ -1054,6 +1073,12 @@
     });
     document.addEventListener("click", (event) => {
       const link = event.target.closest?.("a[href]");
+      if (link && isNewsletterListMenuLink(link, getNavigationUrl(link.getAttribute("href")))) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        openNewsletterList(link.href);
+        return;
+      }
       if (!link || !prepareLink(link)) return;
       // A FullCalendar döntse el, hogy kattintás vagy húzás történt;
       // a valódi eseménykattintást az eventClick nyitja új lapon.
@@ -1065,6 +1090,243 @@
       // irányíthatja át a naptár lapját location.href-fel.
       event.stopImmediatePropagation();
     }, true);
+  }
+
+  // A lista saját dokumentumban fut: a Yii GridView szűrői, a címzett-
+  // popoverek és a CSRF-es, megerősített POST műveletek megmaradnak.
+  function openNewsletterList(url) {
+    if (newsletterListPanel) {
+      newsletterListPanel.open(url);
+      return;
+    }
+
+    const style = document.createElement("style");
+    style.textContent = `
+      #__pte_newsletter_list {
+        width: 96vw; max-width: 1800px; height: 92vh; height: 92dvh;
+        max-height: calc(100dvh - 24px); margin: auto; padding: 0;
+        border: 1px solid var(--pte-list-border); border-radius: 10px;
+        background: var(--pte-list-background); color: var(--pte-list-text);
+        box-shadow: 0 16px 60px rgba(0,0,0,.3); overflow: hidden;
+      }
+      #__pte_newsletter_list[open] { display: flex; flex-direction: column; }
+      #__pte_newsletter_list::backdrop { background: rgba(15,23,42,.55); }
+      #__pte_newsletter_list .pte-list-header {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+        padding: 14px 18px; border-bottom: 1px solid var(--pte-list-border);
+        background: var(--pte-list-surface); flex-shrink: 0;
+      }
+      #__pte_newsletter_list h2 { margin: 0; flex: 1; font-size: 22px; color: var(--pte-list-title); }
+      #__pte_newsletter_list button {
+        padding: 7px 14px; border: 1px solid var(--pte-list-border); border-radius: 5px;
+        background: var(--pte-list-surface); color: var(--pte-list-text); cursor: pointer;
+      }
+      #__pte_newsletter_list button:disabled { opacity: .6; cursor: wait; }
+      #__pte_newsletter_list :focus-visible { outline: 2px solid var(--pte-list-accent); outline-offset: 2px; }
+      #__pte_newsletter_list .pte-list-message { padding: 12px 18px; flex-shrink: 0; }
+      #__pte_newsletter_list .pte-list-message a { color: var(--pte-list-text); text-decoration: underline; }
+      #__pte_newsletter_list iframe { width: 100%; flex: 1; min-height: 0; border: 0; background: var(--pte-list-background); }
+    `;
+    document.head.appendChild(style);
+    const dialog = document.createElement("dialog");
+    dialog.id = "__pte_newsletter_list";
+    dialog.setAttribute("aria-labelledby", "__pte_newsletter_list_title");
+    dialog.innerHTML = `
+      <div class="pte-list-header">
+        <h2 id="__pte_newsletter_list_title">Hírlevelek</h2>
+        <button type="button" data-refresh>Frissítés</button>
+        <button type="button" data-close autofocus>Vissza a naptárhoz</button>
+      </div>
+      <div class="pte-list-message" role="status" aria-live="polite" hidden>
+        <span></span>
+        <a target="_blank" rel="noopener" hidden>Lista megnyitása új lapon</a>
+      </div>
+      <iframe title="Hírlevelek listája"></iframe>
+    `;
+    const frame = dialog.querySelector("iframe");
+    const refreshButton = dialog.querySelector("[data-refresh]");
+    const message = dialog.querySelector(".pte-list-message");
+    const fallbackLink = message.querySelector("a");
+    let lastUrl = url;
+    let frameDocument = null;
+    let frameObserver = null;
+    let loadTimer = null;
+
+    function setLoading() {
+      clearTimeout(loadTimer);
+      message.hidden = false;
+      message.querySelector("span").textContent = "Hírlevelek betöltése…";
+      fallbackLink.hidden = true;
+      refreshButton.disabled = true;
+      frame.style.visibility = "hidden";
+      frame.setAttribute("aria-busy", "true");
+      loadTimer = setTimeout(() => showError("A lista betöltése túl sokáig tart. Próbáld újra a Frissítés gombbal."), 30_000);
+    }
+    function showError(text) {
+      clearTimeout(loadTimer);
+      message.hidden = false;
+      message.querySelector("span").textContent = text + " ";
+      fallbackLink.href = lastUrl;
+      fallbackLink.hidden = false;
+      refreshButton.disabled = false;
+      frame.style.visibility = "hidden";
+      frame.setAttribute("aria-busy", "false");
+    }
+    function loadList() {
+      setLoading();
+      frame.src = lastUrl;
+    }
+    function updateTheme() {
+      const colors = calendarAppearanceColors;
+      const palette = {
+        background: colors?.pageBackground || "#ecf0f5",
+        surface: colors?.calendarBackground || "#ffffff",
+        text: colors?.text || "#333333",
+        title: colors?.calendarTitle || "#333333",
+        border: colors?.grid || "#dddddd",
+        accent: colors?.accent || "#3c8dbc",
+        highlight: colors?.today || "#e8f3ff",
+      };
+      for (const [name, value] of Object.entries(palette)) {
+        dialog.style.setProperty(`--pte-list-${name}`, value);
+        frameDocument?.documentElement.style.setProperty(`--pte-list-${name}`, value);
+      }
+    }
+    function prepareFrameLink(link) {
+      const destination = getNavigationUrl(link.getAttribute("href"), frameDocument.baseURI);
+      if (!destination) return "control";
+      if (isLogoutLink(link, destination)) {
+        if (link.target !== "_top") link.target = "_top";
+        return "logout";
+      }
+      if (link.matches("[data-toggle], [data-bs-toggle], [data-widget], [role=button]")) return "control";
+      if (isNewsletterListUrl(destination)) {
+        if (link.target !== "_self") link.target = "_self";
+        return "list";
+      }
+      if (link.target !== "_blank") link.target = "_blank";
+      link.relList.add("noopener");
+      link.setAttribute("data-pjax", "0");
+      return "action";
+    }
+    function prepareFrameTree(root) {
+      if (root.nodeType !== 1) return;
+      if (root.matches("a[href]")) prepareFrameLink(root);
+      root.querySelectorAll("a[href]").forEach(prepareFrameLink);
+    }
+    frame.addEventListener("load", () => {
+      try {
+        if (frame.contentWindow.location.href === "about:blank") return;
+        frameObserver?.disconnect();
+        frameDocument = frame.contentDocument;
+        const currentUrl = new URL(frame.contentWindow.location.href);
+        if (!isNewsletterListUrl(currentUrl) || !frameDocument?.querySelector(".news-letters-index .grid-view")) {
+          throw new Error("A Hírlevelek lista nem található; lehet, hogy újra be kell jelentkezni.");
+        }
+        lastUrl = currentUrl.href;
+        const frameStyle = frameDocument.createElement("style");
+        frameStyle.textContent = `
+          html, body, .wrapper { height: auto !important; min-height: 0 !important; background: var(--pte-list-background) !important; color: var(--pte-list-text) !important; }
+          .main-header, .main-sidebar, .main-footer, .control-sidebar, .control-sidebar-bg, .content-header { display: none !important; }
+          .content-wrapper {
+            position: static !important; margin: 0 !important; padding: 0 !important;
+            height: auto !important; min-height: 0 !important; transform: none !important;
+            background: var(--pte-list-background) !important; color: var(--pte-list-text) !important;
+          }
+          .content { padding: 16px; }
+          .news-letters-index > h1 { display: none; }
+          .panel, .box, .popover, .modal-content, .select2-dropdown {
+            background: var(--pte-list-surface) !important; color: var(--pte-list-text) !important;
+            border-color: var(--pte-list-border) !important;
+          }
+          .grid-view table { background: var(--pte-list-surface); }
+          .grid-view .table > thead > tr > th, .grid-view .table > thead > tr > td,
+          .grid-view .table > tbody > tr > td { border-color: var(--pte-list-border) !important; }
+          .grid-view .table > tbody > tr, .grid-view .table > tbody > tr > td {
+            background: var(--pte-list-surface) !important; color: var(--pte-list-text) !important;
+          }
+          .grid-view .table-striped > tbody > tr:nth-of-type(odd) > td { background: var(--pte-list-background) !important; }
+          .grid-view .table > tbody > tr:hover > td { background: var(--pte-list-highlight) !important; }
+          .grid-view th, .grid-view th a, .modal-title { color: var(--pte-list-title) !important; }
+          .grid-view td a { color: var(--pte-list-text) !important; }
+          .form-control, .form-control option, .select2-selection {
+            background: var(--pte-list-surface) !important; color: var(--pte-list-text) !important;
+            border-color: var(--pte-list-border) !important;
+          }
+          .form-control::placeholder { color: var(--pte-list-text); opacity: .6; }
+          .form-control:focus { border-color: var(--pte-list-accent) !important; }
+          .pagination > li > a, .pagination > li > span {
+            background: var(--pte-list-surface) !important; color: var(--pte-list-text) !important;
+            border-color: var(--pte-list-border) !important;
+          }
+          .pagination > .active > a, .pagination > li > a:hover { background: var(--pte-list-highlight) !important; }
+          .popover-title { background: var(--pte-list-background); color: var(--pte-list-title); }
+        `;
+        frameDocument.head.appendChild(frameStyle);
+        updateTheme();
+        prepareFrameTree(frameDocument.body);
+        frameObserver = new MutationObserver((records) => {
+          for (const record of records) {
+            if (record.type === "attributes") {
+              if (record.target.matches("a[href]")) prepareFrameLink(record.target);
+            } else record.addedNodes.forEach(prepareFrameTree);
+          }
+        });
+        frameObserver.observe(frameDocument.body, {
+          childList: true, subtree: true, attributes: true, attributeFilter: ["href", "target"],
+        });
+        frameDocument.addEventListener("click", (event) => {
+          const link = event.target.closest?.("a[href]");
+          if (!link || prepareFrameLink(link) !== "action") return;
+          // Megőrizzük a Yii POST/CSRF és megerősítés működését; a target
+          // átkerül a Yii által létrehozott űrlapra is.
+          if (link.hasAttribute("data-method") || link.hasAttribute("data-confirm")) return;
+          // Az új lapon nyíló link ne indítsa el a lista .need_loader rétegét.
+          event.stopImmediatePropagation();
+        }, true);
+        frameDocument.addEventListener("submit", (event) => {
+          const form = event.target;
+          const destination = getNavigationUrl(form.getAttribute("action") || frameDocument.URL, frameDocument.baseURI);
+          form.target = destination && isLogoutLink(null, destination) ? "_top" :
+            isNewsletterListUrl(destination) ? "_self" : "_blank";
+        }, true);
+        frameDocument.addEventListener("keydown", (event) => {
+          if (event.key === "Escape" && !frameDocument.querySelector(".modal.in, .select2-container--open")) {
+            event.preventDefault();
+            dialog.close();
+          }
+        });
+        frame.contentWindow.addEventListener("beforeunload", setLoading, { once: true });
+        clearTimeout(loadTimer);
+        message.hidden = true;
+        refreshButton.disabled = false;
+        frame.style.visibility = "visible";
+        frame.setAttribute("aria-busy", "false");
+      } catch (error) {
+        frameDocument = null;
+        showError("A Hírlevelek lista nem tölthető be itt. Nyisd meg új lapon, vagy próbáld újra.");
+        console.warn("[PTE] Hírlevelek lista:", error);
+      }
+    });
+    frame.addEventListener("error", () => showError("A Hírlevelek lista betöltése sikertelen."));
+    refreshButton.addEventListener("click", loadList);
+    dialog.querySelector("[data-close]").addEventListener("click", () => dialog.close());
+    dialog.addEventListener("close", () => {
+      clearTimeout(loadTimer);
+      requestCalendarRefresh();
+    });
+    document.addEventListener("__pte_calendar_appearance_changed", updateTheme);
+    document.body.appendChild(dialog);
+    newsletterListPanel = {
+      open(destination) {
+        const nextUrl = new URL(destination, document.baseURI);
+        if (nextUrl.search) lastUrl = nextUrl.href;
+        updateTheme();
+        if (!dialog.open) dialog.showModal();
+        loadList();
+      },
+    };
+    newsletterListPanel.open(url);
   }
 
   const originalEventClick = $calendar.fullCalendar("option", "eventClick");
@@ -1672,9 +1934,11 @@
     }
 
     function applyColors(colors) {
+      calendarAppearanceColors = colors;
       if (!colors) {
         themeStyle.textContent = "";
         document.documentElement.removeAttribute("data-pte-calendar-colors");
+        document.dispatchEvent(new Event("__pte_calendar_appearance_changed"));
         return;
       }
       const rgb = colors.accent.slice(1).match(/../g).map((part) => parseInt(part, 16));
@@ -1774,6 +2038,7 @@
         }
       `;
       document.documentElement.setAttribute("data-pte-calendar-colors", "true");
+      document.dispatchEvent(new Event("__pte_calendar_appearance_changed"));
     }
 
     let savedColors = null;
