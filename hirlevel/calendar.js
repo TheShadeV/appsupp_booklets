@@ -1459,16 +1459,6 @@
     const style = document.createElement("style");
     style.id = "__pte_calendar_page_layout";
     style.textContent = `
-      html.__pte_calendar_fixed_layout,
-      html.__pte_calendar_fixed_layout body {
-        height: 100%;
-        overflow: hidden !important;
-      }
-      .__pte_calendar_fixed_layout .wrapper {
-        height: 100%;
-        min-height: 0 !important;
-        overflow: hidden;
-      }
       .__pte_calendar_fixed_layout .main-header {
         position: fixed !important;
         top: 0;
@@ -1481,7 +1471,6 @@
         bottom: 0;
         left: 0;
         right: 0;
-        z-index: 820;
       }
       .__pte_calendar_fixed_layout .content-wrapper {
         position: fixed !important;
@@ -1507,8 +1496,8 @@
     document.head.appendChild(style);
     document.documentElement.classList.add("__pte_calendar_fixed_layout");
 
-    // A sablon oldalsó margóit, transzformációit és sidebar-osztályait
-    // megtartjuk, így a saját nyitó/csukó animációja tovább működik.
+    // A body, a wrapper és a sidebar elrendezését az eredeti sablon kezeli.
+    // Csak a fejléc, a lábléc és a középső tartalom méretét igazítjuk.
     let lastHeaderHeight = null;
     let lastFooterHeight = null;
     let lastContentWidth = null;
