@@ -48,6 +48,21 @@
   // JQUERY / FULLCALENDAR
   // ============================================================
 
+  const LIST_STATE_STYLES = [
+    { id: "modified", key: "listModified", label: "Módosított", light: "#9a6700", dark: "#fbbf24" },
+    { id: "tested", key: "listTested", label: "Teszt kiküldve", light: "#7c3aed", dark: "#c4b5fd" },
+    { id: "deleted", key: "listDeleted", label: "Törölt", light: "#b91c1c", dark: "#fca5a5" },
+    { id: "closed", key: "listClosed", label: "Lezárt", light: "#1d4ed8", dark: "#93c5fd" },
+    { id: "sending", key: "listSending", label: "Küldés alatt", light: "#15803d", dark: "#86efac" },
+  ];
+
+  function getListStateColors(background = "#ffffff") {
+    const rgb = /^#[0-9a-f]{6}$/i.test(background)
+      ? background.slice(1).match(/../g).map((part) => parseInt(part, 16)) : [255, 255, 255];
+    const dark = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000 < 128;
+    return Object.fromEntries(LIST_STATE_STYLES.map((state) => [state.key, dark ? state.dark : state.light]));
+  }
+
   const jq = window.jQuery;
 
   if (!jq || !jq.fn || typeof jq.fn.fullCalendar !== "function") {
@@ -1187,6 +1202,10 @@
         accent: colors?.accent || "#3c8dbc",
         highlight: colors?.today || "#e8f3ff",
       };
+      const stateColors = getListStateColors(palette.surface);
+      for (const state of LIST_STATE_STYLES) {
+        palette[`state-${state.id}`] = colors?.[state.key] || stateColors[state.key];
+      }
       for (const [name, value] of Object.entries(palette)) {
         dialog.style.setProperty(`--pte-list-${name}`, value);
         frameDocument?.documentElement.style.setProperty(`--pte-list-${name}`, value);
@@ -1195,6 +1214,12 @@
     function prepareFrameLink(link) {
       const destination = getNavigationUrl(link.getAttribute("href"), frameDocument.baseURI);
       if (!destination) return "control";
+      if (link.closest(".popover-content") && destination.origin === location.origin &&
+          /^\/help\/get-[a-z-]*emails\/?$/i.test(destination.pathname)) {
+        // A címzettcsoport darabszáma csak szöveg legyen a felugróban.
+        link.replaceWith(frameDocument.createTextNode(link.textContent));
+        return "text";
+      }
       if (isLogoutLink(link, destination)) {
         if (link.target !== "_top") link.target = "_top";
         return "logout";
@@ -1213,6 +1238,32 @@
       if (root.nodeType !== 1) return;
       if (root.matches("a[href]")) prepareFrameLink(root);
       root.querySelectorAll("a[href]").forEach(prepareFrameLink);
+    }
+
+    function highlightListStates() {
+      for (const grid of frameDocument.querySelectorAll(".news-letters-index .grid-view")) {
+        const table = grid.querySelector("table");
+        if (!table) continue;
+        // Az oszlopot a fejléc alapján találjuk meg, nem fix sorszámmal.
+        // A Törölt a Státusz oszlopban érkezik, a többi az Állapotban.
+        const columns = ["state", "status"].map((name) =>
+          table.querySelector(`thead [data-sort="${name}"]`)?.closest("th")?.cellIndex
+        ).filter((index) => Number.isInteger(index));
+        for (const cell of table.querySelectorAll("td[data-pte-list-state]")) {
+          cell.removeAttribute("data-pte-list-state");
+        }
+        for (const body of table.tBodies) {
+          for (const row of body.rows) {
+            for (const index of columns) {
+              const cell = row.cells[index];
+              if (!cell) continue;
+              const value = cell.textContent.replace(/\s+/g, " ").trim().toLocaleLowerCase("hu");
+              const state = LIST_STATE_STYLES.find((item) => item.label.toLocaleLowerCase("hu") === value);
+              cell.setAttribute("data-pte-list-state", state?.id || "other");
+            }
+          }
+        }
+      }
     }
     frame.addEventListener("load", () => {
       try {
@@ -1247,6 +1298,18 @@
           }
           .grid-view .table-striped > tbody > tr:nth-of-type(odd) > td { background: var(--pte-list-background) !important; }
           .grid-view .table > tbody > tr:hover > td { background: var(--pte-list-highlight) !important; }
+          .grid-view .table > tbody > tr > td[data-pte-list-state] {
+            font-weight: 700 !important;
+            color: var(--pte-list-state-color, var(--pte-list-text)) !important;
+          }
+          .grid-view .table > tbody > tr > td[data-pte-list-state] * {
+            font-weight: inherit !important; color: inherit !important;
+          }
+          ${LIST_STATE_STYLES.map((state) => `
+            .grid-view td[data-pte-list-state="${state.id}"] {
+              --pte-list-state-color: var(--pte-list-state-${state.id});
+            }
+          `).join("\n")}
           .grid-view th, .grid-view th a, .modal-title { color: var(--pte-list-title) !important; }
           .grid-view td a { color: var(--pte-list-text) !important; }
           .form-control, .form-control option, .select2-selection {
@@ -1261,23 +1324,34 @@
           }
           .pagination > .active > a, .pagination > li > a:hover { background: var(--pte-list-highlight) !important; }
           .popover-title { background: var(--pte-list-background); color: var(--pte-list-title); }
+          .popover-content, .popover-content * { color: var(--pte-list-text) !important; }
         `;
         frameDocument.head.appendChild(frameStyle);
         updateTheme();
         prepareFrameTree(frameDocument.body);
+        highlightListStates();
         frameObserver = new MutationObserver((records) => {
           for (const record of records) {
             if (record.type === "attributes") {
               if (record.target.matches("a[href]")) prepareFrameLink(record.target);
-            } else record.addedNodes.forEach(prepareFrameTree);
+            } else if (record.type === "childList") record.addedNodes.forEach(prepareFrameTree);
           }
+          if (records.some((record) => record.type === "childList" || record.type === "characterData")) highlightListStates();
         });
         frameObserver.observe(frameDocument.body, {
-          childList: true, subtree: true, attributes: true, attributeFilter: ["href", "target"],
+          childList: true, characterData: true, subtree: true,
+          attributes: true, attributeFilter: ["href", "target"],
         });
         frameDocument.addEventListener("click", (event) => {
           const link = event.target.closest?.("a[href]");
-          if (!link || prepareFrameLink(link) !== "action") return;
+          if (!link) return;
+          const linkType = prepareFrameLink(link);
+          if (linkType === "text") {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return;
+          }
+          if (linkType !== "action") return;
           // Megőrizzük a Yii POST/CSRF és megerősítés működését; a target
           // átkerül a Yii által létrehozott űrlapra is.
           if (link.hasAttribute("data-method") || link.hasAttribute("data-confirm")) return;
@@ -1791,24 +1865,35 @@
     const footer = document.querySelector(".main-footer");
     const navbar = header?.querySelector(".navbar");
     const calendar = $calendar[0];
-    const fields = [
-      ["navbarBackground", "Fejléc háttere"],
-      ["navbarText", "Fejléc szövege és ikonjai"],
-      ["pageBackground", "Oldal háttere"],
-      ["calendarBackground", "Naptár háttere"],
-      ["text", "Tartalom szövege"],
-      ["calendarTitle", "Naptár címe és napfejlécei"],
-      ["eventText", "Naptáresemények szövege"],
-      ["eventSending", "Kiküldés alatt (eredetileg zöld)"],
-      ["eventArmed", "Élesített (eredetileg piros)"],
-      ["eventOther", "Egyéb esemény (eredetileg kék)"],
-      ["grid", "Naptárrács fővonalai és keretek"],
-      ["gridMinor", "Naptárrács köztes vonalai"],
-      ["today", "Mai nap kiemelése"],
-      ["accent", "Naptárgombok"],
-      ["footerBackground", "Lábléc háttere"],
-      ["footerText", "Lábléc szövege"],
+    const fieldGroups = [
+      { title: "Fejléc", fields: [
+        ["navbarBackground", "Háttér"],
+        ["navbarText", "Szöveg és ikonok"],
+      ] },
+      { title: "Oldal", fields: [
+        ["pageBackground", "Háttér"],
+        ["text", "Szöveg"],
+      ] },
+      { title: "Naptár", fields: [
+        ["calendarBackground", "Háttér"],
+        ["calendarTitle", "Cím és napfejlécek"],
+        ["grid", "Rács fővonalai és keretek"],
+        ["gridMinor", "Rács köztes vonalai"],
+        ["today", "Mai nap kiemelése"],
+        ["accent", "Gombok"],
+      ] },
+      { title: "Események", fields: [
+        ["eventText", "Szöveg"],
+        ["eventSending", "Kiküldés alatt (eredetileg zöld)"],
+        ["eventArmed", "Élesített (eredetileg piros)"],
+        ["eventOther", "Egyéb (eredetileg kék)"],
+      ] },
+      { title: "Lábléc", footer: true, fields: [
+        ["footerBackground", "Háttér"],
+        ["footerText", "Szöveg"],
+      ] },
     ];
+    const fields = fieldGroups.flatMap((group) => group.fields);
 
     function readColor(element, property, fallback) {
       if (!element) return fallback;
@@ -1816,6 +1901,12 @@
       const match = value.match(/^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/);
       if (!match || (match[4] !== undefined && Number(match[4]) < 1)) return fallback;
       return "#" + match.slice(1, 4).map((part) => Number(part).toString(16).padStart(2, "0")).join("");
+    }
+
+    function contrastingText(color) {
+      const rgb = color.slice(1).match(/../g).map((part) => parseInt(part, 16));
+      return (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000 > 150
+        ? "#111827" : "#ffffff";
     }
 
     const defaults = {
@@ -1941,9 +2032,7 @@
         document.dispatchEvent(new Event("__pte_calendar_appearance_changed"));
         return;
       }
-      const rgb = colors.accent.slice(1).match(/../g).map((part) => parseInt(part, 16));
-      const buttonText = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000 > 150
-        ? "#111827" : "#ffffff";
+      const buttonText = contrastingText(colors.accent);
       const scope = "html[data-pte-calendar-colors]";
       themeStyle.textContent = `
         ${scope} .main-header .navbar,
@@ -2080,39 +2169,62 @@
     const dialogStyle = document.createElement("style");
     dialogStyle.textContent = `
       #__pte_calendar_appearance {
-        width: 520px; max-width: calc(100vw - 32px);
+        width: 740px; max-width: calc(100vw - 32px);
         max-height: calc(100dvh - 32px); overflow: auto;
         box-sizing: border-box; padding: 24px; margin: auto;
-        border: 1px solid #d5dce5; border-radius: 12px;
-        color: #263445; background: #fff; font: 14px/1.5 Arial, sans-serif;
+        border: 1px solid var(--pte-appearance-border); border-radius: 12px;
+        color: var(--pte-appearance-text); background: var(--pte-appearance-background);
+        font: 14px/1.5 Arial, sans-serif;
         box-shadow: 0 16px 60px rgba(0,0,0,.3);
       }
       #__pte_calendar_appearance::backdrop { background: rgba(15,23,42,.55); }
-      #__pte_calendar_appearance h2 { margin: 0 0 8px; font-size: 22px; color: #172234; }
+      #__pte_calendar_appearance h2 { margin: 0 0 8px; font-size: 22px; color: var(--pte-appearance-title); }
       #__pte_calendar_appearance p { margin: 0 0 16px; }
       #__pte_calendar_appearance .pte-presets,
       #__pte_calendar_appearance .pte-actions { display: flex; flex-wrap: wrap; gap: 8px; }
       #__pte_calendar_appearance .pte-presets { margin-bottom: 16px; }
       #__pte_calendar_appearance .pte-actions { justify-content: flex-end; margin-top: 20px; }
+      #__pte_calendar_appearance .pte-color-fields {
+        display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;
+        align-items: start;
+      }
+      #__pte_calendar_appearance fieldset {
+        min-width: 0; margin: 0; padding: 8px 14px 12px;
+        border: 1px solid var(--pte-appearance-border); border-radius: 8px;
+        background: var(--pte-appearance-surface);
+      }
+      #__pte_calendar_appearance legend {
+        width: auto; margin: 0; padding: 0 6px; border: 0;
+        font-size: 16px; font-weight: bold; color: var(--pte-appearance-title);
+      }
+      @media (max-width: 620px) {
+        #__pte_calendar_appearance .pte-color-fields { grid-template-columns: 1fr; }
+      }
       #__pte_calendar_appearance label {
         display: flex; align-items: center; justify-content: space-between;
         gap: 16px; margin: 0; padding: 8px 0; font-weight: normal;
-        border-bottom: 1px solid #edf0f4;
+        border-bottom: 1px solid var(--pte-appearance-border);
       }
+      #__pte_calendar_appearance fieldset label:last-child { border-bottom: 0; }
       #__pte_calendar_appearance input[type=color] {
         width: 54px; height: 32px; flex-shrink: 0; padding: 2px;
-        border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; cursor: pointer;
+        border: 1px solid var(--pte-appearance-border); border-radius: 4px;
+        background: var(--pte-appearance-background); cursor: pointer;
       }
       #__pte_calendar_appearance input[type=checkbox] {
-        width: 18px; height: 18px; margin: 0; accent-color: #1769aa; cursor: pointer;
+        width: 18px; height: 18px; margin: 0;
+        accent-color: var(--pte-appearance-accent); cursor: pointer;
       }
       #__pte_calendar_appearance button {
-        padding: 8px 14px; border: 1px solid #cbd5e1; border-radius: 6px;
-        background: #f8fafc; color: #263445; font: inherit; cursor: pointer;
+        padding: 8px 14px; border: 1px solid var(--pte-appearance-border); border-radius: 6px;
+        background: var(--pte-appearance-surface); color: var(--pte-appearance-text); font: inherit; cursor: pointer;
       }
-      #__pte_calendar_appearance button[type=submit] { background: #1769aa; color: #fff; border-color: #1769aa; }
-      #__pte_calendar_appearance :focus-visible { outline: 2px solid #1769aa; outline-offset: 3px; }
-      #__pte_calendar_appearance .pte-error { color: #b52b27; margin-top: 12px; }
+      #__pte_calendar_appearance button[type=submit] {
+        background: var(--pte-appearance-accent); color: var(--pte-appearance-button-text);
+        border-color: var(--pte-appearance-accent);
+      }
+      #__pte_calendar_appearance :focus-visible { outline: 2px solid var(--pte-appearance-accent); outline-offset: 3px; }
+      #__pte_calendar_appearance .pte-error { color: var(--pte-appearance-text); font-weight: bold; margin-top: 12px; }
     `;
     document.head.appendChild(dialogStyle);
     const dialog = document.createElement("dialog");
@@ -2128,7 +2240,7 @@
           <button type="button" data-preset="default">Eredeti színek</button>
         </div>
         <div class="pte-color-fields"></div>
-        <label><span>Lábléc megjelenítése</span><input type="checkbox" name="showFooter"></label>
+        <label data-footer-visibility><span>Megjelenítés</span><input type="checkbox" name="showFooter"></label>
         <p class="pte-error" role="alert" hidden></p>
         <div class="pte-actions">
           <button type="button" data-cancel>Mégse</button>
@@ -2137,21 +2249,46 @@
       </form>
     `;
     document.body.appendChild(dialog);
+    function updateDialogTheme() {
+      const colors = calendarAppearanceColors || defaults;
+      const palette = {
+        background: colors.pageBackground,
+        surface: colors.calendarBackground,
+        text: colors.text,
+        title: colors.calendarTitle,
+        border: colors.grid,
+        accent: colors.accent,
+        "button-text": contrastingText(colors.accent),
+      };
+      for (const [name, value] of Object.entries(palette)) {
+        dialog.style.setProperty(`--pte-appearance-${name}`, value);
+      }
+    }
+    updateDialogTheme();
+    document.addEventListener("__pte_calendar_appearance_changed", updateDialogTheme);
     const inputs = new Map();
     const errorMessage = dialog.querySelector(".pte-error");
     const footerInput = dialog.querySelector('[name="showFooter"]');
     let useDefaults = false;
-    for (const [key, title] of fields) {
-      const label = document.createElement("label");
-      const caption = document.createElement("span");
-      caption.textContent = title;
-      const input = document.createElement("input");
-      input.type = "color";
-      input.name = key;
-      input.addEventListener("input", () => { useDefaults = false; });
-      label.append(caption, input);
-      dialog.querySelector(".pte-color-fields").appendChild(label);
-      inputs.set(key, input);
+    for (const group of fieldGroups) {
+      const fieldset = document.createElement("fieldset");
+      const legend = document.createElement("legend");
+      legend.textContent = group.title;
+      fieldset.appendChild(legend);
+      for (const [key, title] of group.fields) {
+        const label = document.createElement("label");
+        const caption = document.createElement("span");
+        caption.textContent = title;
+        const input = document.createElement("input");
+        input.type = "color";
+        input.name = key;
+        input.addEventListener("input", () => { useDefaults = false; });
+        label.append(caption, input);
+        fieldset.appendChild(label);
+        inputs.set(key, input);
+      }
+      if (group.footer) fieldset.appendChild(dialog.querySelector("[data-footer-visibility]"));
+      dialog.querySelector(".pte-color-fields").appendChild(fieldset);
     }
     function fillForm(colors) {
       for (const [key, input] of inputs) input.value = colors[key];
