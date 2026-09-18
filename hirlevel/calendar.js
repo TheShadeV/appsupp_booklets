@@ -1460,25 +1460,23 @@
     style.id = "__pte_calendar_page_layout";
     style.textContent = `
       .__pte_calendar_fixed_layout .main-header {
-        position: fixed !important;
-        top: 0;
-        left: 0;
-        right: 0;
-        width: auto;
+        position: relative !important;
+        top: auto;
+        left: auto;
+        right: auto;
       }
       .__pte_calendar_fixed_layout .main-footer {
-        position: fixed !important;
-        bottom: 0;
-        left: 0;
-        right: 0;
+        position: relative !important;
+        bottom: auto;
+        left: auto;
+        right: auto;
       }
       .__pte_calendar_fixed_layout .content-wrapper {
-        position: fixed !important;
-        top: var(--pte-calendar-header-height);
-        bottom: var(--pte-calendar-footer-height);
-        left: 0;
-        right: 0;
-        height: auto !important;
+        position: relative !important;
+        top: auto;
+        bottom: auto;
+        height: max(0px, calc(100vh - var(--pte-calendar-header-height) - var(--pte-calendar-footer-height))) !important;
+        height: max(0px, calc(100dvh - var(--pte-calendar-header-height) - var(--pte-calendar-footer-height))) !important;
         min-height: 0 !important;
         margin-top: 0;
         margin-bottom: 0;
@@ -1496,8 +1494,9 @@
     document.head.appendChild(style);
     document.documentElement.classList.add("__pte_calendar_fixed_layout");
 
-    // A body, a wrapper és a sidebar elrendezését az eredeti sablon kezeli.
-    // Csak a fejléc, a lábléc és a középső tartalom méretét igazítjuk.
+    // Mindhárom elem a normál dokumentumfolyamban marad: együtt adják
+    // a wrapper magasságát, amelyhez az eredeti sidebar is igazodik.
+    // Görgetni csak a korlátozott magasságú középső tartalmat kell.
     let lastHeaderHeight = null;
     let lastFooterHeight = null;
     let lastContentWidth = null;
