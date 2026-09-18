@@ -21,6 +21,7 @@
   // ✓ méretezés induláskor és window resize esetén
   // ✓ fix fejléc és lábléc, közöttük görgethető tartalom
   // ✓ saját színek, böngészőben mentett megjelenés
+  // ✓ gombok, görgetősávok és folyamatjelzők külön színezése
   // ============================================================
 
   // ============================================================
@@ -49,18 +50,57 @@
   // ============================================================
 
   const LIST_STATE_STYLES = [
-    { id: "modified", key: "listModified", label: "Módosított", light: "#9a6700", dark: "#fbbf24" },
-    { id: "tested", key: "listTested", label: "Teszt kiküldve", light: "#7c3aed", dark: "#c4b5fd" },
-    { id: "deleted", key: "listDeleted", label: "Törölt", light: "#b91c1c", dark: "#fca5a5" },
-    { id: "closed", key: "listClosed", label: "Lezárt", light: "#1d4ed8", dark: "#93c5fd" },
-    { id: "sending", key: "listSending", label: "Küldés alatt", light: "#15803d", dark: "#86efac" },
+    {
+      id: "modified",
+      key: "listModified",
+      label: "Módosított",
+      light: "#9a6700",
+      dark: "#fbbf24",
+    },
+    {
+      id: "tested",
+      key: "listTested",
+      label: "Teszt kiküldve",
+      light: "#7c3aed",
+      dark: "#c4b5fd",
+    },
+    {
+      id: "deleted",
+      key: "listDeleted",
+      label: "Törölt",
+      light: "#b91c1c",
+      dark: "#fca5a5",
+    },
+    {
+      id: "closed",
+      key: "listClosed",
+      label: "Lezárt",
+      light: "#1d4ed8",
+      dark: "#93c5fd",
+    },
+    {
+      id: "sending",
+      key: "listSending",
+      label: "Küldés alatt",
+      light: "#15803d",
+      dark: "#86efac",
+    },
   ];
 
   function getListStateColors(background = "#ffffff") {
     const rgb = /^#[0-9a-f]{6}$/i.test(background)
-      ? background.slice(1).match(/../g).map((part) => parseInt(part, 16)) : [255, 255, 255];
+      ? background
+          .slice(1)
+          .match(/../g)
+          .map((part) => parseInt(part, 16))
+      : [255, 255, 255];
     const dark = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000 < 128;
-    return Object.fromEntries(LIST_STATE_STYLES.map((state) => [state.key, dark ? state.dark : state.light]));
+    return Object.fromEntries(
+      LIST_STATE_STYLES.map((state) => [
+        state.key,
+        dark ? state.dark : state.light,
+      ]),
+    );
   }
 
   const jq = window.jQuery;
@@ -1017,12 +1057,22 @@
   // ============================================================
 
   function getNavigationUrl(value, baseUrl = document.baseURI) {
-    if (typeof value !== "string" || !value.trim() || value.trim().startsWith("#")) return null;
+    if (
+      typeof value !== "string" ||
+      !value.trim() ||
+      value.trim().startsWith("#")
+    )
+      return null;
     try {
       const url = new URL(value, baseUrl);
       if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-      if (url.hash && url.origin === location.origin &&
-          url.pathname === location.pathname && url.search === location.search) return null;
+      if (
+        url.hash &&
+        url.origin === location.origin &&
+        url.pathname === location.pathname &&
+        url.search === location.search
+      )
+        return null;
       return url;
     } catch {
       return null;
@@ -1031,14 +1081,25 @@
 
   function isLogoutLink(link, url) {
     const route = url.pathname + "/" + (url.searchParams.get("r") || "");
-    const label = [link?.textContent, link?.getAttribute("aria-label"), link?.title].filter(Boolean).join(" ");
-    return /(?:^|\/)(?:log-?out|sign-?out)(?:\/|$)/i.test(route) ||
-      /kijelentkez|\blog\s*out\b|\bsign\s*out\b/i.test(label);
+    const label = [
+      link?.textContent,
+      link?.getAttribute("aria-label"),
+      link?.title,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    return (
+      /(?:^|\/)(?:log-?out|sign-?out)(?:\/|$)/i.test(route) ||
+      /kijelentkez|\blog\s*out\b|\bsign\s*out\b/i.test(label)
+    );
   }
 
   function isNewsletterListUrl(url) {
-    return url && url.origin === location.origin &&
-      /^\/news-letters(?:\/index)?\/?$/.test(url.pathname);
+    return (
+      url &&
+      url.origin === location.origin &&
+      /^\/news-letters(?:\/index)?\/?$/.test(url.pathname)
+    );
   }
 
   function isNewsletterListMenuLink(link, url) {
@@ -1060,9 +1121,14 @@
         link.setAttribute("data-pjax", "0");
         return false;
       }
-      if (link.matches("[data-toggle], [data-bs-toggle], [data-widget], .dropdown-toggle, [role=button]") ||
-          (link.parentElement?.classList.contains("treeview") &&
-           link.parentElement.querySelector(".treeview-menu"))) return false;
+      if (
+        link.matches(
+          "[data-toggle], [data-bs-toggle], [data-widget], .dropdown-toggle, [role=button]",
+        ) ||
+        (link.parentElement?.classList.contains("treeview") &&
+          link.parentElement.querySelector(".treeview-menu"))
+      )
+        return false;
       if (link.target !== "_blank") link.target = "_blank";
       link.relList.add("noopener");
       link.setAttribute("data-pjax", "0");
@@ -1084,27 +1150,44 @@
       }
     });
     observer.observe(document.body, {
-      childList: true, subtree: true, attributes: true, attributeFilter: ["href", "target"],
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["href", "target"],
     });
-    document.addEventListener("click", (event) => {
-      const link = event.target.closest?.("a[href]");
-      if (link && isNewsletterListMenuLink(link, getNavigationUrl(link.getAttribute("href")))) {
-        event.preventDefault();
+    document.addEventListener(
+      "click",
+      (event) => {
+        const link = event.target.closest?.("a[href]");
+        if (
+          link &&
+          isNewsletterListMenuLink(
+            link,
+            getNavigationUrl(link.getAttribute("href")),
+          )
+        ) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          openNewsletterList(link.href);
+          return;
+        }
+        if (!link || !prepareLink(link)) return;
+        // A FullCalendar döntse el, hogy kattintás vagy húzás történt;
+        // a valódi eseménykattintást az eventClick nyitja új lapon.
+        // A Yii megerősítést / POST-ot is az eredeti kezelő kapja.
+        if (
+          link.closest(CONFIG.calendarSelector) ||
+          link.hasAttribute("data-method") ||
+          link.hasAttribute("data-confirm") ||
+          link.hasAttribute("download")
+        )
+          return;
+        // A natív linknyitást meghagyjuk, de a régi click-kezelő nem
+        // irányíthatja át a naptár lapját location.href-fel.
         event.stopImmediatePropagation();
-        openNewsletterList(link.href);
-        return;
-      }
-      if (!link || !prepareLink(link)) return;
-      // A FullCalendar döntse el, hogy kattintás vagy húzás történt;
-      // a valódi eseménykattintást az eventClick nyitja új lapon.
-      // A Yii megerősítést / POST-ot is az eredeti kezelő kapja.
-      if (link.closest(CONFIG.calendarSelector) ||
-          link.hasAttribute("data-method") || link.hasAttribute("data-confirm") ||
-          link.hasAttribute("download")) return;
-      // A natív linknyitást meghagyjuk, de a régi click-kezelő nem
-      // irányíthatja át a naptár lapját location.href-fel.
-      event.stopImmediatePropagation();
-    }, true);
+      },
+      true,
+    );
   }
 
   // A lista saját dokumentumban fut: a Yii GridView szűrői, a címzett-
@@ -1133,8 +1216,23 @@
       }
       #__pte_newsletter_list h2 { margin: 0; flex: 1; font-size: 22px; color: var(--pte-list-title); }
       #__pte_newsletter_list button {
-        padding: 7px 14px; border: 1px solid var(--pte-list-border); border-radius: 5px;
-        background: var(--pte-list-surface); color: var(--pte-list-text); cursor: pointer;
+        padding: 7px 14px; border: 1px solid var(--pte-list-buttonBorder); border-radius: 5px;
+        background: var(--pte-list-buttonBackground); color: var(--pte-list-buttonText); cursor: pointer;
+      }
+      #__pte_newsletter_list button:hover,
+      #__pte_newsletter_list button:focus { box-shadow: inset 0 0 0 100px rgba(0,0,0,.10); }
+      #__pte_newsletter_list, #__pte_newsletter_list * {
+        scrollbar-color: var(--pte-list-scrollbarThumb) var(--pte-list-scrollbarTrack);
+      }
+      #__pte_newsletter_list::-webkit-scrollbar, #__pte_newsletter_list *::-webkit-scrollbar {
+        background: var(--pte-list-scrollbarTrack);
+      }
+      #__pte_newsletter_list::-webkit-scrollbar-track, #__pte_newsletter_list *::-webkit-scrollbar-track {
+        background: var(--pte-list-scrollbarTrack);
+      }
+      #__pte_newsletter_list::-webkit-scrollbar-thumb, #__pte_newsletter_list *::-webkit-scrollbar-thumb {
+        background-color: var(--pte-list-scrollbarThumb);
+        border: 2px solid var(--pte-list-scrollbarTrack); border-radius: 999px;
       }
       #__pte_newsletter_list button:disabled { opacity: .6; cursor: wait; }
       #__pte_newsletter_list :focus-visible { outline: 2px solid var(--pte-list-accent); outline-offset: 2px; }
@@ -1175,7 +1273,13 @@
       refreshButton.disabled = true;
       frame.style.visibility = "hidden";
       frame.setAttribute("aria-busy", "true");
-      loadTimer = setTimeout(() => showError("A lista betöltése túl sokáig tart. Próbáld újra a Frissítés gombbal."), 30_000);
+      loadTimer = setTimeout(
+        () =>
+          showError(
+            "A lista betöltése túl sokáig tart. Próbáld újra a Frissítés gombbal.",
+          ),
+        30_000,
+      );
     }
     function showError(text) {
       clearTimeout(loadTimer);
@@ -1201,21 +1305,41 @@
         border: colors?.grid || "#dddddd",
         accent: colors?.accent || "#3c8dbc",
         highlight: colors?.today || "#e8f3ff",
+        buttonBackground:
+          colors?.buttonBackground || colors?.calendarBackground || "#ffffff",
+        buttonText: colors?.buttonText || colors?.text || "#333333",
+        buttonBorder: colors?.buttonBorder || colors?.grid || "#dddddd",
+        scrollbarThumb: colors?.scrollbarThumb || "#9aa4b2",
+        scrollbarTrack:
+          colors?.scrollbarTrack || colors?.pageBackground || "#ecf0f5",
+        progressTrack: colors?.progressTrack || "#f5f5f5",
+        progressBar: colors?.progressBar || "#5cb85c",
+        progressText: colors?.progressText || "#ffffff",
       };
       const stateColors = getListStateColors(palette.surface);
       for (const state of LIST_STATE_STYLES) {
-        palette[`state-${state.id}`] = colors?.[state.key] || stateColors[state.key];
+        palette[`state-${state.id}`] =
+          colors?.[state.key] || stateColors[state.key];
       }
       for (const [name, value] of Object.entries(palette)) {
         dialog.style.setProperty(`--pte-list-${name}`, value);
-        frameDocument?.documentElement.style.setProperty(`--pte-list-${name}`, value);
+        frameDocument?.documentElement.style.setProperty(
+          `--pte-list-${name}`,
+          value,
+        );
       }
     }
     function prepareFrameLink(link) {
-      const destination = getNavigationUrl(link.getAttribute("href"), frameDocument.baseURI);
+      const destination = getNavigationUrl(
+        link.getAttribute("href"),
+        frameDocument.baseURI,
+      );
       if (!destination) return "control";
-      if (link.closest(".popover-content") && destination.origin === location.origin &&
-          /^\/help\/get-[a-z-]*emails\/?$/i.test(destination.pathname)) {
+      if (
+        link.closest(".popover-content") &&
+        destination.origin === location.origin &&
+        /^\/help\/get-[a-z-]*emails\/?$/i.test(destination.pathname)
+      ) {
         // A címzettcsoport darabszáma csak szöveg legyen a felugróban.
         link.replaceWith(frameDocument.createTextNode(link.textContent));
         return "text";
@@ -1224,7 +1348,12 @@
         if (link.target !== "_top") link.target = "_top";
         return "logout";
       }
-      if (link.matches("[data-toggle], [data-bs-toggle], [data-widget], [role=button]")) return "control";
+      if (
+        link.matches(
+          "[data-toggle], [data-bs-toggle], [data-widget], [role=button]",
+        )
+      )
+        return "control";
       if (isNewsletterListUrl(destination)) {
         if (link.target !== "_self") link.target = "_self";
         return "list";
@@ -1241,14 +1370,20 @@
     }
 
     function highlightListStates() {
-      for (const grid of frameDocument.querySelectorAll(".news-letters-index .grid-view")) {
+      for (const grid of frameDocument.querySelectorAll(
+        ".news-letters-index .grid-view",
+      )) {
         const table = grid.querySelector("table");
         if (!table) continue;
         // Az oszlopot a fejléc alapján találjuk meg, nem fix sorszámmal.
         // A Törölt a Státusz oszlopban érkezik, a többi az Állapotban.
-        const columns = ["state", "status"].map((name) =>
-          table.querySelector(`thead [data-sort="${name}"]`)?.closest("th")?.cellIndex
-        ).filter((index) => Number.isInteger(index));
+        const columns = ["state", "status"]
+          .map(
+            (name) =>
+              table.querySelector(`thead [data-sort="${name}"]`)?.closest("th")
+                ?.cellIndex,
+          )
+          .filter((index) => Number.isInteger(index));
         for (const cell of table.querySelectorAll("td[data-pte-list-state]")) {
           cell.removeAttribute("data-pte-list-state");
         }
@@ -1257,8 +1392,13 @@
             for (const index of columns) {
               const cell = row.cells[index];
               if (!cell) continue;
-              const value = cell.textContent.replace(/\s+/g, " ").trim().toLocaleLowerCase("hu");
-              const state = LIST_STATE_STYLES.find((item) => item.label.toLocaleLowerCase("hu") === value);
+              const value = cell.textContent
+                .replace(/\s+/g, " ")
+                .trim()
+                .toLocaleLowerCase("hu");
+              const state = LIST_STATE_STYLES.find(
+                (item) => item.label.toLocaleLowerCase("hu") === value,
+              );
               cell.setAttribute("data-pte-list-state", state?.id || "other");
             }
           }
@@ -1271,8 +1411,13 @@
         frameObserver?.disconnect();
         frameDocument = frame.contentDocument;
         const currentUrl = new URL(frame.contentWindow.location.href);
-        if (!isNewsletterListUrl(currentUrl) || !frameDocument?.querySelector(".news-letters-index .grid-view")) {
-          throw new Error("A Hírlevelek lista nem található; lehet, hogy újra be kell jelentkezni.");
+        if (
+          !isNewsletterListUrl(currentUrl) ||
+          !frameDocument?.querySelector(".news-letters-index .grid-view")
+        ) {
+          throw new Error(
+            "A Hírlevelek lista nem található; lehet, hogy újra be kell jelentkezni.",
+          );
         }
         lastUrl = currentUrl.href;
         const frameStyle = frameDocument.createElement("style");
@@ -1305,13 +1450,38 @@
           .grid-view .table > tbody > tr > td[data-pte-list-state] * {
             font-weight: inherit !important; color: inherit !important;
           }
-          ${LIST_STATE_STYLES.map((state) => `
+          ${LIST_STATE_STYLES.map(
+            (state) => `
             .grid-view td[data-pte-list-state="${state.id}"] {
               --pte-list-state-color: var(--pte-list-state-${state.id});
             }
-          `).join("\n")}
+          `,
+          ).join("\n")}
           .grid-view th, .grid-view th a, .modal-title { color: var(--pte-list-title) !important; }
           .grid-view td a { color: var(--pte-list-text) !important; }
+          html, body, * { scrollbar-color: var(--pte-list-scrollbarThumb) var(--pte-list-scrollbarTrack); }
+          *::-webkit-scrollbar { background: var(--pte-list-scrollbarTrack); }
+          *::-webkit-scrollbar-track { background: var(--pte-list-scrollbarTrack); }
+          *::-webkit-scrollbar-thumb {
+            background-color: var(--pte-list-scrollbarThumb);
+            border: 2px solid var(--pte-list-scrollbarTrack); border-radius: 999px;
+          }
+          button, .btn, input[type=button], input[type=submit], input[type=reset] {
+            background-color: var(--pte-list-buttonBackground) !important;
+            color: var(--pte-list-buttonText) !important;
+            border-color: var(--pte-list-buttonBorder) !important;
+            background-image: none !important;
+            text-shadow: none !important;
+          }
+          button:hover, button:focus, .btn:hover, .btn:focus,
+          input[type=button]:hover, input[type=submit]:hover, input[type=reset]:hover {
+            box-shadow: inset 0 0 0 100px rgba(0,0,0,.10);
+          }
+          .progress { background-color: var(--pte-list-progressTrack) !important; }
+          .progress .progress-bar {
+            background-color: var(--pte-list-progressBar) !important;
+            color: var(--pte-list-progressText) !important;
+          }
           .form-control, .form-control option, .select2-selection {
             background: var(--pte-list-surface) !important; color: var(--pte-list-text) !important;
             border-color: var(--pte-list-border) !important;
@@ -1333,44 +1503,79 @@
         frameObserver = new MutationObserver((records) => {
           for (const record of records) {
             if (record.type === "attributes") {
-              if (record.target.matches("a[href]")) prepareFrameLink(record.target);
-            } else if (record.type === "childList") record.addedNodes.forEach(prepareFrameTree);
+              if (record.target.matches("a[href]"))
+                prepareFrameLink(record.target);
+            } else if (record.type === "childList")
+              record.addedNodes.forEach(prepareFrameTree);
           }
-          if (records.some((record) => record.type === "childList" || record.type === "characterData")) highlightListStates();
+          if (
+            records.some(
+              (record) =>
+                record.type === "childList" || record.type === "characterData",
+            )
+          )
+            highlightListStates();
         });
         frameObserver.observe(frameDocument.body, {
-          childList: true, characterData: true, subtree: true,
-          attributes: true, attributeFilter: ["href", "target"],
+          childList: true,
+          characterData: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ["href", "target"],
         });
-        frameDocument.addEventListener("click", (event) => {
-          const link = event.target.closest?.("a[href]");
-          if (!link) return;
-          const linkType = prepareFrameLink(link);
-          if (linkType === "text") {
-            event.preventDefault();
+        frameDocument.addEventListener(
+          "click",
+          (event) => {
+            const link = event.target.closest?.("a[href]");
+            if (!link) return;
+            const linkType = prepareFrameLink(link);
+            if (linkType === "text") {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+              return;
+            }
+            if (linkType !== "action") return;
+            // Megőrizzük a Yii POST/CSRF és megerősítés működését; a target
+            // átkerül a Yii által létrehozott űrlapra is.
+            if (
+              link.hasAttribute("data-method") ||
+              link.hasAttribute("data-confirm")
+            )
+              return;
+            // Az új lapon nyíló link ne indítsa el a lista .need_loader rétegét.
             event.stopImmediatePropagation();
-            return;
-          }
-          if (linkType !== "action") return;
-          // Megőrizzük a Yii POST/CSRF és megerősítés működését; a target
-          // átkerül a Yii által létrehozott űrlapra is.
-          if (link.hasAttribute("data-method") || link.hasAttribute("data-confirm")) return;
-          // Az új lapon nyíló link ne indítsa el a lista .need_loader rétegét.
-          event.stopImmediatePropagation();
-        }, true);
-        frameDocument.addEventListener("submit", (event) => {
-          const form = event.target;
-          const destination = getNavigationUrl(form.getAttribute("action") || frameDocument.URL, frameDocument.baseURI);
-          form.target = destination && isLogoutLink(null, destination) ? "_top" :
-            isNewsletterListUrl(destination) ? "_self" : "_blank";
-        }, true);
+          },
+          true,
+        );
+        frameDocument.addEventListener(
+          "submit",
+          (event) => {
+            const form = event.target;
+            const destination = getNavigationUrl(
+              form.getAttribute("action") || frameDocument.URL,
+              frameDocument.baseURI,
+            );
+            form.target =
+              destination && isLogoutLink(null, destination)
+                ? "_top"
+                : isNewsletterListUrl(destination)
+                  ? "_self"
+                  : "_blank";
+          },
+          true,
+        );
         frameDocument.addEventListener("keydown", (event) => {
-          if (event.key === "Escape" && !frameDocument.querySelector(".modal.in, .select2-container--open")) {
+          if (
+            event.key === "Escape" &&
+            !frameDocument.querySelector(".modal.in, .select2-container--open")
+          ) {
             event.preventDefault();
             dialog.close();
           }
         });
-        frame.contentWindow.addEventListener("beforeunload", setLoading, { once: true });
+        frame.contentWindow.addEventListener("beforeunload", setLoading, {
+          once: true,
+        });
         clearTimeout(loadTimer);
         message.hidden = true;
         refreshButton.disabled = false;
@@ -1378,13 +1583,19 @@
         frame.setAttribute("aria-busy", "false");
       } catch (error) {
         frameDocument = null;
-        showError("A Hírlevelek lista nem tölthető be itt. Nyisd meg új lapon, vagy próbáld újra.");
+        showError(
+          "A Hírlevelek lista nem tölthető be itt. Nyisd meg új lapon, vagy próbáld újra.",
+        );
         console.warn("[PTE] Hírlevelek lista:", error);
       }
     });
-    frame.addEventListener("error", () => showError("A Hírlevelek lista betöltése sikertelen."));
+    frame.addEventListener("error", () =>
+      showError("A Hírlevelek lista betöltése sikertelen."),
+    );
     refreshButton.addEventListener("click", loadList);
-    dialog.querySelector("[data-close]").addEventListener("click", () => dialog.close());
+    dialog
+      .querySelector("[data-close]")
+      .addEventListener("click", () => dialog.close());
     dialog.addEventListener("close", () => {
       clearTimeout(loadTimer);
       requestCalendarRefresh();
@@ -1866,83 +2077,209 @@
     const navbar = header?.querySelector(".navbar");
     const calendar = $calendar[0];
     const fieldGroups = [
-      { title: "Fejléc", fields: [
-        ["navbarBackground", "Háttér"],
-        ["navbarText", "Szöveg és ikonok"],
-      ] },
-      { title: "Oldal", fields: [
-        ["pageBackground", "Háttér"],
-        ["text", "Szöveg"],
-      ] },
-      { title: "Naptár", fields: [
-        ["calendarBackground", "Háttér"],
-        ["calendarTitle", "Cím és napfejlécek"],
-        ["grid", "Rács fővonalai és keretek"],
-        ["gridMinor", "Rács köztes vonalai"],
-        ["today", "Mai nap kiemelése"],
-        ["accent", "Gombok"],
-      ] },
-      { title: "Események", fields: [
-        ["eventText", "Szöveg"],
-        ["eventSending", "Kiküldés alatt (eredetileg zöld)"],
-        ["eventArmed", "Élesített (eredetileg piros)"],
-        ["eventOther", "Egyéb (eredetileg kék)"],
-      ] },
-      { title: "Lábléc", footer: true, fields: [
-        ["footerBackground", "Háttér"],
-        ["footerText", "Szöveg"],
-      ] },
+      {
+        title: "Fejléc",
+        fields: [
+          ["navbarBackground", "Háttér"],
+          ["navbarText", "Szöveg és ikonok"],
+        ],
+      },
+      {
+        title: "Oldal",
+        fields: [
+          ["pageBackground", "Háttér"],
+          ["text", "Szöveg"],
+        ],
+      },
+      {
+        title: "Naptár",
+        fields: [
+          ["calendarBackground", "Háttér"],
+          ["calendarTitle", "Cím és napfejlécek"],
+          ["grid", "Rács fővonalai és keretek"],
+          ["gridMinor", "Rács köztes vonalai"],
+          ["today", "Mai nap kiemelése"],
+          ["accent", "Kiemelés / fókusz"],
+        ],
+      },
+      {
+        title: "Vezérlők",
+        fields: [
+          ["buttonBackground", "Gombok háttere"],
+          ["buttonText", "Gombok szövege"],
+          ["buttonBorder", "Gombok kerete"],
+          ["scrollbarThumb", "Görgetősáv csúszkája"],
+          ["scrollbarTrack", "Görgetősáv háttere"],
+          ["progressTrack", "Folyamatjelző háttere"],
+          ["progressBar", "Folyamatjelző kitöltése"],
+          ["progressText", "Folyamatjelző szövege"],
+        ],
+      },
+      {
+        title: "Események",
+        fields: [
+          ["eventText", "Szöveg"],
+          ["eventSending", "Kiküldés alatt (eredetileg zöld)"],
+          ["eventArmed", "Élesített (eredetileg piros)"],
+          ["eventOther", "Egyéb (eredetileg kék)"],
+        ],
+      },
+      {
+        title: "Lábléc",
+        footer: true,
+        fields: [
+          ["footerBackground", "Háttér"],
+          ["footerText", "Szöveg"],
+        ],
+      },
     ];
     const fields = fieldGroups.flatMap((group) => group.fields);
 
     function readColor(element, property, fallback) {
       if (!element) return fallback;
       const value = window.getComputedStyle(element)[property];
-      const match = value.match(/^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/);
-      if (!match || (match[4] !== undefined && Number(match[4]) < 1)) return fallback;
-      return "#" + match.slice(1, 4).map((part) => Number(part).toString(16).padStart(2, "0")).join("");
+      const match = value.match(
+        /^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/,
+      );
+      if (!match || (match[4] !== undefined && Number(match[4]) < 1))
+        return fallback;
+      return (
+        "#" +
+        match
+          .slice(1, 4)
+          .map((part) => Number(part).toString(16).padStart(2, "0"))
+          .join("")
+      );
     }
 
     function contrastingText(color) {
-      const rgb = color.slice(1).match(/../g).map((part) => parseInt(part, 16));
+      const rgb = color
+        .slice(1)
+        .match(/../g)
+        .map((part) => parseInt(part, 16));
       return (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000 > 150
-        ? "#111827" : "#ffffff";
+        ? "#111827"
+        : "#ffffff";
     }
+
+    const buttonProbe =
+      calendar.querySelector(".fc-button") ||
+      document.querySelector(".btn, button");
+    const progressProbe = document.querySelector(
+      "#ns_progress.progress, .progress",
+    );
+    const progressBarProbe = progressProbe?.querySelector(".progress-bar");
 
     const defaults = {
       navbarBackground: readColor(navbar, "backgroundColor", "#3c8dbc"),
-      navbarText: readColor(navbar?.querySelector(".navbar-nav > li > a"), "color", "#ffffff"),
+      navbarText: readColor(
+        navbar?.querySelector(".navbar-nav > li > a"),
+        "color",
+        "#ffffff",
+      ),
       pageBackground: readColor(content, "backgroundColor", "#ecf0f5"),
-      calendarBackground: readColor(calendar.querySelector(".fc-view-container"), "backgroundColor", "#ffffff"),
+      calendarBackground: readColor(
+        calendar.querySelector(".fc-view-container"),
+        "backgroundColor",
+        "#ffffff",
+      ),
       text: readColor(calendar, "color", "#333333"),
-      calendarTitle: readColor(calendar.querySelector(".fc-toolbar h2"), "color", "#333333"),
-      eventText: readColor(calendar.querySelector(".fc-event"), "color", "#ffffff"),
+      calendarTitle: readColor(
+        calendar.querySelector(".fc-toolbar h2"),
+        "color",
+        "#333333",
+      ),
+      eventText: readColor(
+        calendar.querySelector(".fc-event"),
+        "color",
+        "#ffffff",
+      ),
       eventSending: "#00a65a",
       eventArmed: "#dd4b39",
       eventOther: "#3c8dbc",
-      grid: readColor(calendar.querySelector("td"), "borderBottomColor", "#dddddd"),
-      gridMinor: readColor(calendar.querySelector(".fc-slats .fc-minor td"), "borderBottomColor", "#e8edf2"),
-      today: readColor(calendar.querySelector(".fc-today"), "backgroundColor", "#fcf8e3"),
-      accent: readColor(calendar.querySelector(".fc-button"), "backgroundColor", "#e6e6e6"),
+      grid: readColor(
+        calendar.querySelector("td"),
+        "borderBottomColor",
+        "#dddddd",
+      ),
+      gridMinor: readColor(
+        calendar.querySelector(".fc-slats .fc-minor td"),
+        "borderBottomColor",
+        "#e8edf2",
+      ),
+      today: readColor(
+        calendar.querySelector(".fc-today"),
+        "backgroundColor",
+        "#fcf8e3",
+      ),
+      accent: readColor(
+        calendar.querySelector(".fc-button"),
+        "backgroundColor",
+        "#3c8dbc",
+      ),
+      buttonBackground: readColor(buttonProbe, "backgroundColor", "#e6e6e6"),
+      buttonText: readColor(buttonProbe, "color", "#333333"),
+      buttonBorder: readColor(buttonProbe, "borderTopColor", "#cccccc"),
+      scrollbarThumb: "#9aa4b2",
+      scrollbarTrack: readColor(content, "backgroundColor", "#ecf0f5"),
+      progressTrack: readColor(progressProbe, "backgroundColor", "#f5f5f5"),
+      progressBar: readColor(progressBarProbe, "backgroundColor", "#5cb85c"),
+      progressText: readColor(progressBarProbe, "color", "#ffffff"),
       footerBackground: readColor(footer, "backgroundColor", "#ffffff"),
       footerText: readColor(footer, "color", "#444444"),
     };
     const presets = {
       light: {
-        navbarBackground: "#3c8dbc", navbarText: "#ffffff",
-        pageBackground: "#ecf0f5", calendarBackground: "#ffffff",
-        text: "#263445", grid: "#d5dce5", today: "#e8f3ff",
-        calendarTitle: "#263445", eventText: "#ffffff", gridMinor: "#e8edf2",
-        eventSending: "#218838", eventArmed: "#b52b27", eventOther: "#287db0",
-        accent: "#287db0", footerBackground: "#ffffff", footerText: "#444444",
+        navbarBackground: "#3c8dbc",
+        navbarText: "#ffffff",
+        pageBackground: "#ecf0f5",
+        calendarBackground: "#ffffff",
+        text: "#263445",
+        grid: "#d5dce5",
+        today: "#e8f3ff",
+        calendarTitle: "#263445",
+        eventText: "#ffffff",
+        gridMinor: "#e8edf2",
+        eventSending: "#218838",
+        eventArmed: "#b52b27",
+        eventOther: "#287db0",
+        accent: "#287db0",
+        buttonBackground: "#287db0",
+        buttonText: "#ffffff",
+        buttonBorder: "#1f6794",
+        scrollbarThumb: "#8b98a8",
+        scrollbarTrack: "#e4e9ef",
+        progressTrack: "#e4e9ef",
+        progressBar: "#218838",
+        progressText: "#ffffff",
+        footerBackground: "#ffffff",
+        footerText: "#444444",
       },
       dark: {
-        navbarBackground: "#172234", navbarText: "#f1f5f9",
-        pageBackground: "#111827", calendarBackground: "#1f2937",
-        text: "#e5e7eb", grid: "#475569", today: "#293f5b",
-        calendarTitle: "#f1f5f9", eventText: "#ffffff", gridMinor: "#334155",
-        eventSending: "#247a4b", eventArmed: "#a73535", eventOther: "#285f99",
-        accent: "#60a5fa", footerBackground: "#172234", footerText: "#e5e7eb",
+        navbarBackground: "#172234",
+        navbarText: "#f1f5f9",
+        pageBackground: "#111827",
+        calendarBackground: "#1f2937",
+        text: "#e5e7eb",
+        grid: "#475569",
+        today: "#293f5b",
+        calendarTitle: "#f1f5f9",
+        eventText: "#ffffff",
+        gridMinor: "#334155",
+        eventSending: "#247a4b",
+        eventArmed: "#a73535",
+        eventOther: "#285f99",
+        accent: "#60a5fa",
+        buttonBackground: "#334155",
+        buttonText: "#f8fafc",
+        buttonBorder: "#64748b",
+        scrollbarThumb: "#64748b",
+        scrollbarTrack: "#1f2937",
+        progressTrack: "#334155",
+        progressBar: "#22c55e",
+        progressText: "#ffffff",
+        footerBackground: "#172234",
+        footerText: "#e5e7eb",
       },
     };
     const themeStyle = document.createElement("style");
@@ -1961,15 +2298,24 @@
       if (statusColors.has(value)) return statusColors.get(value);
       colorProbe.style.color = "";
       colorProbe.style.color = value;
-      const hex = colorProbe.style.color ? readColor(colorProbe, "color", null) : null;
+      const hex = colorProbe.style.color
+        ? readColor(colorProbe, "color", null)
+        : null;
       let status = null;
       if (hex) {
-        const [red, green, blue] = hex.slice(1).match(/../g).map((part) => parseInt(part, 16) / 255);
+        const [red, green, blue] = hex
+          .slice(1)
+          .match(/../g)
+          .map((part) => parseInt(part, 16) / 255);
         const max = Math.max(red, green, blue);
         const delta = max - Math.min(red, green, blue);
         if (delta > 0.1) {
-          let hue = max === red ? (green - blue) / delta :
-            max === green ? (blue - red) / delta + 2 : (red - green) / delta + 4;
+          let hue =
+            max === red
+              ? (green - blue) / delta
+              : max === green
+                ? (blue - red) / delta + 2
+                : (red - green) / delta + 4;
           hue = (hue * 60 + 360) % 360;
           if (hue < 20 || hue >= 345) status = "armed";
           else if (hue >= 70 && hue < 170) status = "sending";
@@ -1981,22 +2327,32 @@
     }
 
     const originalEventRender = $calendar.fullCalendar("option", "eventRender");
-    $calendar.fullCalendar("option", "eventRender", function (event, element, ...args) {
-      const result = typeof originalEventRender === "function"
-        ? originalEventRender.call(this, event, element, ...args) : undefined;
-      if (result === false) return false;
-      const rendered = result && result !== true ? jq(result) : element;
-      const originalColor = rendered[0]?.style.backgroundColor ||
-        event.backgroundColor || event.color ||
-        event.source?.backgroundColor || event.source?.color ||
-        $calendar.fullCalendar("option", "eventBackgroundColor") ||
-        $calendar.fullCalendar("option", "eventColor") || "#3a87ad";
-      const status = statusFromColor(originalColor);
-      rendered.removeAttr("data-pte-calendar-status");
-      if (status) rendered.attr("data-pte-calendar-status", status);
-      // HTML-szöveges visszatérésnél is a már megjelölt elemet adjuk tovább.
-      return result && result !== true ? rendered : result;
-    });
+    $calendar.fullCalendar(
+      "option",
+      "eventRender",
+      function (event, element, ...args) {
+        const result =
+          typeof originalEventRender === "function"
+            ? originalEventRender.call(this, event, element, ...args)
+            : undefined;
+        if (result === false) return false;
+        const rendered = result && result !== true ? jq(result) : element;
+        const originalColor =
+          rendered[0]?.style.backgroundColor ||
+          event.backgroundColor ||
+          event.color ||
+          event.source?.backgroundColor ||
+          event.source?.color ||
+          $calendar.fullCalendar("option", "eventBackgroundColor") ||
+          $calendar.fullCalendar("option", "eventColor") ||
+          "#3a87ad";
+        const status = statusFromColor(originalColor);
+        rendered.removeAttr("data-pte-calendar-status");
+        if (status) rendered.attr("data-pte-calendar-status", status);
+        // HTML-szöveges visszatérésnél is a már megjelölt elemet adjuk tovább.
+        return result && result !== true ? rendered : result;
+      },
+    );
 
     const footerStyle = document.createElement("style");
     footerStyle.textContent = `
@@ -2004,21 +2360,27 @@
     `;
     document.head.appendChild(footerStyle);
     function applyFooterVisibility(visible) {
-      document.documentElement.toggleAttribute("data-pte-calendar-footer-hidden", !visible);
+      document.documentElement.toggleAttribute(
+        "data-pte-calendar-footer-hidden",
+        !visible,
+      );
       // Azonnal átadjuk a felszabaduló helyet, ResizeObserver nélkül is.
       document.documentElement.style.setProperty(
-        "--pte-calendar-footer-height", `${footer?.getBoundingClientRect().height || 0}px`,
+        "--pte-calendar-footer-height",
+        `${footer?.getBoundingClientRect().height || 0}px`,
       );
       scheduleCalendarFit();
     }
 
     function normalizeColors(value) {
-      if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        return null;
       const colors = {};
       for (const [key] of fields) {
         // A korábban mentett palettákhoz az új mezőket alapértékkel pótoljuk.
         const color = value[key] ?? defaults[key];
-        if (typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color)) return null;
+        if (typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color))
+          return null;
         colors[key] = color.toLowerCase();
       }
       return colors;
@@ -2032,7 +2394,6 @@
         document.dispatchEvent(new Event("__pte_calendar_appearance_changed"));
         return;
       }
-      const buttonText = contrastingText(colors.accent);
       const scope = "html[data-pte-calendar-colors]";
       themeStyle.textContent = `
         ${scope} .main-header .navbar,
@@ -2052,9 +2413,56 @@
           background-color: ${colors.navbarBackground} !important;
           box-shadow: inset 0 0 0 100px rgba(0, 0, 0, .12);
         }
+        ${scope}, ${scope} body, ${scope} * {
+          scrollbar-color: ${colors.scrollbarThumb} ${colors.scrollbarTrack};
+        }
+        ${scope}::-webkit-scrollbar,
+        ${scope} body::-webkit-scrollbar,
+        ${scope} *::-webkit-scrollbar {
+          background: ${colors.scrollbarTrack};
+        }
+        ${scope}::-webkit-scrollbar-track,
+        ${scope} body::-webkit-scrollbar-track,
+        ${scope} *::-webkit-scrollbar-track {
+          background: ${colors.scrollbarTrack};
+        }
+        ${scope}::-webkit-scrollbar-thumb,
+        ${scope} body::-webkit-scrollbar-thumb,
+        ${scope} *::-webkit-scrollbar-thumb {
+          background-color: ${colors.scrollbarThumb};
+          border: 2px solid ${colors.scrollbarTrack};
+          border-radius: 999px;
+        }
         ${scope} .content-wrapper {
           background-color: ${colors.pageBackground} !important;
           color: ${colors.text} !important;
+        }
+        ${scope} button,
+        ${scope} .btn,
+        ${scope} input[type="button"],
+        ${scope} input[type="submit"],
+        ${scope} input[type="reset"] {
+          background-color: ${colors.buttonBackground} !important;
+          color: ${colors.buttonText} !important;
+          border-color: ${colors.buttonBorder} !important;
+          background-image: none !important;
+          text-shadow: none !important;
+        }
+        ${scope} button:hover, ${scope} button:focus,
+        ${scope} .btn:hover, ${scope} .btn:focus,
+        ${scope} input[type="button"]:hover, ${scope} input[type="button"]:focus,
+        ${scope} input[type="submit"]:hover, ${scope} input[type="submit"]:focus,
+        ${scope} input[type="reset"]:hover, ${scope} input[type="reset"]:focus {
+          box-shadow: inset 0 0 0 100px rgba(0,0,0,.10);
+        }
+        ${scope} .progress {
+          background-color: ${colors.progressTrack} !important;
+        }
+        ${scope} .progress .progress-bar,
+        ${scope} .progress .progress-bar-success,
+        ${scope} #ns_progress .progress-bar {
+          background-color: ${colors.progressBar} !important;
+          color: ${colors.progressText} !important;
         }
         ${scope} .content-wrapper .box,
         ${scope} ${CONFIG.calendarSelector},
@@ -2112,13 +2520,13 @@
           border-color: var(--pte-event-color) !important;
         }
         ${scope} ${CONFIG.calendarSelector} .fc-button {
-          background: ${colors.accent} !important;
-          border-color: ${colors.accent} !important;
-          color: ${buttonText} !important;
+          background: ${colors.buttonBackground} !important;
+          border-color: ${colors.buttonBorder} !important;
+          color: ${colors.buttonText} !important;
           text-shadow: none;
         }
         ${scope} ${CONFIG.calendarSelector} .fc-state-active {
-          box-shadow: inset 0 0 0 2px ${buttonText};
+          box-shadow: inset 0 0 0 2px ${colors.buttonText};
         }
         ${scope} .main-footer,
         ${scope} .main-footer a {
@@ -2134,9 +2542,14 @@
     let savedShowFooter = true;
     try {
       const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
-      if (saved?.version === 1 || saved?.version === 2) {
+      if (
+        saved?.version === 1 ||
+        saved?.version === 2 ||
+        saved?.version === 3
+      ) {
         savedColors = normalizeColors(saved.colors);
-        if (typeof saved.showFooter === "boolean") savedShowFooter = saved.showFooter;
+        if (typeof saved.showFooter === "boolean")
+          savedShowFooter = saved.showFooter;
       }
     } catch (error) {
       console.warn("[PTE] A mentett színek nem tölthetők be:", error);
@@ -2145,15 +2558,21 @@
     applyFooterVisibility(savedShowFooter);
     $calendar.fullCalendar("rerenderEvents");
 
-    const navList = header?.querySelector(".navbar-custom-menu .navbar-nav, .navbar-right.navbar-nav") ||
-      navbar?.querySelector(".navbar-nav");
+    const navList =
+      header?.querySelector(
+        ".navbar-custom-menu .navbar-nav, .navbar-right.navbar-nav",
+      ) || navbar?.querySelector(".navbar-nav");
     if (!navList) {
-      console.warn("[PTE] A színbeállítások gombjához nem található a navbar menüje.");
+      console.warn(
+        "[PTE] A színbeállítások gombjához nem található a navbar menüje.",
+      );
       return;
     }
-    const userItem = Array.from(navList.children).find((item) =>
-      item.matches(".user-menu") || item.querySelector(".user-image")
-    ) || navList.lastElementChild;
+    const userItem =
+      Array.from(navList.children).find(
+        (item) =>
+          item.matches(".user-menu") || item.querySelector(".user-image"),
+      ) || navList.lastElementChild;
     const navItem = document.createElement("li");
     const trigger = document.createElement("a");
     trigger.href = "#";
@@ -2162,7 +2581,8 @@
     trigger.setAttribute("aria-label", "Megjelenés beállítása");
     trigger.setAttribute("aria-haspopup", "dialog");
     trigger.setAttribute("aria-controls", "__pte_calendar_appearance");
-    trigger.innerHTML = '<span aria-hidden="true" style="display:block;font-size:22px;line-height:20px">&#9881;</span>';
+    trigger.innerHTML =
+      '<span aria-hidden="true" style="display:block;font-size:22px;line-height:20px">&#9881;</span>';
     navItem.appendChild(trigger);
     navList.insertBefore(navItem, userItem);
 
@@ -2178,6 +2598,19 @@
         box-shadow: 0 16px 60px rgba(0,0,0,.3);
       }
       #__pte_calendar_appearance::backdrop { background: rgba(15,23,42,.55); }
+      #__pte_calendar_appearance, #__pte_calendar_appearance * {
+        scrollbar-color: var(--pte-appearance-scrollbar-thumb) var(--pte-appearance-scrollbar-track);
+      }
+      #__pte_calendar_appearance::-webkit-scrollbar, #__pte_calendar_appearance *::-webkit-scrollbar {
+        background: var(--pte-appearance-scrollbar-track);
+      }
+      #__pte_calendar_appearance::-webkit-scrollbar-track, #__pte_calendar_appearance *::-webkit-scrollbar-track {
+        background: var(--pte-appearance-scrollbar-track);
+      }
+      #__pte_calendar_appearance::-webkit-scrollbar-thumb, #__pte_calendar_appearance *::-webkit-scrollbar-thumb {
+        background-color: var(--pte-appearance-scrollbar-thumb);
+        border: 2px solid var(--pte-appearance-scrollbar-track); border-radius: 999px;
+      }
       #__pte_calendar_appearance h2 { margin: 0 0 8px; font-size: 22px; color: var(--pte-appearance-title); }
       #__pte_calendar_appearance p { margin: 0 0 16px; }
       #__pte_calendar_appearance .pte-presets,
@@ -2216,13 +2649,11 @@
         accent-color: var(--pte-appearance-accent); cursor: pointer;
       }
       #__pte_calendar_appearance button {
-        padding: 8px 14px; border: 1px solid var(--pte-appearance-border); border-radius: 6px;
-        background: var(--pte-appearance-surface); color: var(--pte-appearance-text); font: inherit; cursor: pointer;
+        padding: 8px 14px; border: 1px solid var(--pte-appearance-button-border); border-radius: 6px;
+        background: var(--pte-appearance-button-background); color: var(--pte-appearance-button-text); font: inherit; cursor: pointer;
       }
-      #__pte_calendar_appearance button[type=submit] {
-        background: var(--pte-appearance-accent); color: var(--pte-appearance-button-text);
-        border-color: var(--pte-appearance-accent);
-      }
+      #__pte_calendar_appearance button:hover,
+      #__pte_calendar_appearance button:focus { box-shadow: inset 0 0 0 100px rgba(0,0,0,.10); }
       #__pte_calendar_appearance :focus-visible { outline: 2px solid var(--pte-appearance-accent); outline-offset: 3px; }
       #__pte_calendar_appearance .pte-error { color: var(--pte-appearance-text); font-weight: bold; margin-top: 12px; }
     `;
@@ -2258,14 +2689,21 @@
         title: colors.calendarTitle,
         border: colors.grid,
         accent: colors.accent,
-        "button-text": contrastingText(colors.accent),
+        "button-background": colors.buttonBackground,
+        "button-text": colors.buttonText,
+        "button-border": colors.buttonBorder,
+        "scrollbar-thumb": colors.scrollbarThumb,
+        "scrollbar-track": colors.scrollbarTrack,
       };
       for (const [name, value] of Object.entries(palette)) {
         dialog.style.setProperty(`--pte-appearance-${name}`, value);
       }
     }
     updateDialogTheme();
-    document.addEventListener("__pte_calendar_appearance_changed", updateDialogTheme);
+    document.addEventListener(
+      "__pte_calendar_appearance_changed",
+      updateDialogTheme,
+    );
     const inputs = new Map();
     const errorMessage = dialog.querySelector(".pte-error");
     const footerInput = dialog.querySelector('[name="showFooter"]');
@@ -2282,12 +2720,15 @@
         const input = document.createElement("input");
         input.type = "color";
         input.name = key;
-        input.addEventListener("input", () => { useDefaults = false; });
+        input.addEventListener("input", () => {
+          useDefaults = false;
+        });
         label.append(caption, input);
         fieldset.appendChild(label);
         inputs.set(key, input);
       }
-      if (group.footer) fieldset.appendChild(dialog.querySelector("[data-footer-visibility]"));
+      if (group.footer)
+        fieldset.appendChild(dialog.querySelector("[data-footer-visibility]"));
       dialog.querySelector(".pte-color-fields").appendChild(fieldset);
     }
     function fillForm(colors) {
@@ -2305,7 +2746,9 @@
     trigger.addEventListener("keydown", (event) => {
       if (event.key === " ") openDialog(event);
     });
-    dialog.querySelector("[data-cancel]").addEventListener("click", () => dialog.close());
+    dialog
+      .querySelector("[data-cancel]")
+      .addEventListener("click", () => dialog.close());
     for (const button of dialog.querySelectorAll("[data-preset]")) {
       button.addEventListener("click", () => {
         useDefaults = button.dataset.preset === "default";
@@ -2315,17 +2758,24 @@
     }
     dialog.querySelector("form").addEventListener("submit", (event) => {
       event.preventDefault();
-      const colors = normalizeColors(Object.fromEntries(
-        Array.from(inputs, ([key, input]) => [key, input.value])
-      ));
+      const colors = normalizeColors(
+        Object.fromEntries(
+          Array.from(inputs, ([key, input]) => [key, input.value]),
+        ),
+      );
       if (!colors) return;
       const nextColors = useDefaults ? null : colors;
       const showFooter = footerInput.checked;
       try {
         if (useDefaults && showFooter) localStorage.removeItem(storageKey);
-        else localStorage.setItem(storageKey, JSON.stringify({ version: 2, colors: nextColors, showFooter }));
+        else
+          localStorage.setItem(
+            storageKey,
+            JSON.stringify({ version: 3, colors: nextColors, showFooter }),
+          );
       } catch (error) {
-        errorMessage.textContent = "A böngésző nem engedte a helyi mentést. Engedélyezd az oldal adattárolását, majd próbáld újra.";
+        errorMessage.textContent =
+          "A böngésző nem engedte a helyi mentést. Engedélyezd az oldal adattárolását, majd próbáld újra.";
         errorMessage.hidden = false;
         console.warn("[PTE] A színek mentése sikertelen:", error);
         return;
@@ -2400,15 +2850,26 @@
     function updateBounds() {
       const headerHeight = header.getBoundingClientRect().height;
       const footerHeight = footer.getBoundingClientRect().height;
-      const boundsChanged = headerHeight !== lastHeaderHeight || footerHeight !== lastFooterHeight;
+      const boundsChanged =
+        headerHeight !== lastHeaderHeight || footerHeight !== lastFooterHeight;
       if (boundsChanged) {
         lastHeaderHeight = headerHeight;
         lastFooterHeight = footerHeight;
-        document.documentElement.style.setProperty("--pte-calendar-header-height", `${headerHeight}px`);
-        document.documentElement.style.setProperty("--pte-calendar-footer-height", `${footerHeight}px`);
+        document.documentElement.style.setProperty(
+          "--pte-calendar-header-height",
+          `${headerHeight}px`,
+        );
+        document.documentElement.style.setProperty(
+          "--pte-calendar-footer-height",
+          `${footerHeight}px`,
+        );
       }
       const { width, height } = content.getBoundingClientRect();
-      if (boundsChanged || width !== lastContentWidth || height !== lastContentHeight) {
+      if (
+        boundsChanged ||
+        width !== lastContentWidth ||
+        height !== lastContentHeight
+      ) {
         lastContentWidth = width;
         lastContentHeight = height;
         scheduleCalendarFit();
@@ -2608,7 +3069,10 @@
 
     // A középső terület görgetése ne növelje meg a naptárat a következő
     // átméretezéskor: a görgetés előtti pozícióból számolunk.
-    const calendarTop = Math.max(0, calendarRect.top + (pageContent?.scrollTop || 0));
+    const calendarTop = Math.max(
+      0,
+      calendarRect.top + (pageContent?.scrollTop || 0),
+    );
 
     let bottomLimit = window.innerHeight - CONFIG.bottomGap;
 
@@ -2620,20 +3084,30 @@
       const contentStyle = window.getComputedStyle(pageContent);
       let bottomSpace = CONFIG.bottomGap + pixels(contentStyle.paddingBottom);
 
-      for (let element = calendarElement; element && element !== pageContent; element = element.parentElement) {
+      for (
+        let element = calendarElement;
+        element && element !== pageContent;
+        element = element.parentElement
+      ) {
         const style = window.getComputedStyle(element);
-        bottomSpace += pixels(style.marginBottom) +
-          pixels(style.paddingBottom) + pixels(style.borderBottomWidth);
+        bottomSpace +=
+          pixels(style.marginBottom) +
+          pixels(style.paddingBottom) +
+          pixels(style.borderBottomWidth);
 
         if (element === calendarElement) {
           // A FullCalendar height opciója a saját belső tartalmát méretezi.
-          bottomSpace += pixels(style.paddingTop) + pixels(style.borderTopWidth);
+          bottomSpace +=
+            pixels(style.paddingTop) + pixels(style.borderTopWidth);
         }
       }
 
       const contentRect = pageContent.getBoundingClientRect();
-      bottomLimit = contentRect.top + pageContent.clientTop +
-        pageContent.clientHeight - bottomSpace;
+      bottomLimit =
+        contentRect.top +
+        pageContent.clientTop +
+        pageContent.clientHeight -
+        bottomSpace;
     }
 
     // --------------------------------------------------------
