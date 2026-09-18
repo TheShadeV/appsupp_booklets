@@ -1335,15 +1335,9 @@
         frameDocument.baseURI,
       );
       if (!destination) return "control";
-      if (
-        link.closest(".popover-content") &&
-        destination.origin === location.origin &&
-        /^\/help\/get-[a-z-]*emails\/?$/i.test(destination.pathname)
-      ) {
-        // A címzettcsoport darabszáma csak szöveg legyen a felugróban.
-        link.replaceWith(frameDocument.createTextNode(link.textContent));
-        return "text";
-      }
+      // A Címzettek popoverben lévő /help/get-*-emails linkeket is
+      // meghagyjuk valódi linkként, hogy a címzettlisták ellenőrizhetők legyenek.
+      // A lentebbi általános linkkezelés új lapon nyitja őket.
       if (isLogoutLink(link, destination)) {
         if (link.target !== "_top") link.target = "_top";
         return "logout";
@@ -1495,6 +1489,11 @@
           .pagination > .active > a, .pagination > li > a:hover { background: var(--pte-list-highlight) !important; }
           .popover-title { background: var(--pte-list-background); color: var(--pte-list-title); }
           .popover-content, .popover-content * { color: var(--pte-list-text) !important; }
+          .popover-content a[href] {
+            color: var(--pte-list-accent) !important;
+            text-decoration: underline !important;
+            cursor: pointer !important;
+          }
         `;
         frameDocument.head.appendChild(frameStyle);
         updateTheme();
@@ -1529,11 +1528,6 @@
             const link = event.target.closest?.("a[href]");
             if (!link) return;
             const linkType = prepareFrameLink(link);
-            if (linkType === "text") {
-              event.preventDefault();
-              event.stopImmediatePropagation();
-              return;
-            }
             if (linkType !== "action") return;
             // Megőrizzük a Yii POST/CSRF és megerősítés működését; a target
             // átkerül a Yii által létrehozott űrlapra is.
