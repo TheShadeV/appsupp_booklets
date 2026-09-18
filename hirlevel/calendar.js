@@ -1055,9 +1055,10 @@
     document.addEventListener("click", (event) => {
       const link = event.target.closest?.("a[href]");
       if (!link || !prepareLink(link)) return;
-      // A naptármenüt és a Yii megerősítést / POST-ot az eredeti kezelő
-      // kapja; a Yii a link targetjét is átveszi a létrehozott űrlaphoz.
-      if ((event.shiftKey && link.closest(CONFIG.calendarSelector)) ||
+      // A FullCalendar döntse el, hogy kattintás vagy húzás történt;
+      // a valódi eseménykattintást az eventClick nyitja új lapon.
+      // A Yii megerősítést / POST-ot is az eredeti kezelő kapja.
+      if (link.closest(CONFIG.calendarSelector) ||
           link.hasAttribute("data-method") || link.hasAttribute("data-confirm") ||
           link.hasAttribute("download")) return;
       // A natív linknyitást meghagyjuk, de a régi click-kezelő nem
@@ -1640,7 +1641,8 @@
       const status = statusFromColor(originalColor);
       rendered.removeAttr("data-pte-calendar-status");
       if (status) rendered.attr("data-pte-calendar-status", status);
-      return result;
+      // HTML-szöveges visszatérésnél is a már megjelölt elemet adjuk tovább.
+      return result && result !== true ? rendered : result;
     });
 
     const footerStyle = document.createElement("style");
