@@ -19,6 +19,7 @@
   // ✓ dinamikus 0–24 órás időrács
   // ✓ drag közben teljes layout-freeze
   // ✓ méretezés induláskor és window resize esetén
+  // ✓ fix fejléc és lábléc, közöttük görgethető tartalom
   // ============================================================
 
   // ============================================================
@@ -1446,6 +1447,117 @@
   // DINAMIKUS LAYOUT
   // ============================================================
 
+  function installPageLayout() {
+    const header = document.querySelector(".main-header");
+    const footer = document.querySelector(".main-footer");
+    const content = $calendar[0].closest(".content-wrapper");
+
+    if (!header || !footer || !content) {
+      return null;
+    }
+
+    const style = document.createElement("style");
+    style.id = "__pte_calendar_page_layout";
+    style.textContent = `
+      html.__pte_calendar_fixed_layout,
+      html.__pte_calendar_fixed_layout body {
+        height: 100%;
+        overflow: hidden !important;
+      }
+      .__pte_calendar_fixed_layout .wrapper {
+        height: 100%;
+        min-height: 0 !important;
+        overflow: hidden;
+      }
+      .__pte_calendar_fixed_layout .main-header {
+        position: fixed !important;
+        top: 0;
+        left: 0;
+        right: 0;
+        width: auto;
+      }
+      .__pte_calendar_fixed_layout .main-footer {
+        position: fixed !important;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: 820;
+      }
+      .__pte_calendar_fixed_layout .content-wrapper {
+        position: fixed !important;
+        top: var(--pte-calendar-header-height);
+        bottom: var(--pte-calendar-footer-height);
+        left: 0;
+        right: 0;
+        height: auto !important;
+        min-height: 0 !important;
+        margin-top: 0;
+        margin-bottom: 0;
+        overflow: auto !important;
+        box-sizing: border-box;
+        overscroll-behavior: contain;
+      }
+      .__pte_calendar_fixed_layout .content-header {
+        display: none !important;
+      }
+      .__pte_calendar_fixed_layout body.fixed .content-wrapper {
+        padding-top: 0;
+      }
+    `;
+    document.head.appendChild(style);
+    document.documentElement.classList.add("__pte_calendar_fixed_layout");
+
+    // A sablon oldalsó margóit, transzformációit és sidebar-osztályait
+    // megtartjuk, így a saját nyitó/csukó animációja tovább működik.
+    let lastHeaderHeight = null;
+    let lastFooterHeight = null;
+    let lastContentWidth = null;
+    let lastContentHeight = null;
+    function updateBounds() {
+      const headerHeight = header.getBoundingClientRect().height;
+      const footerHeight = footer.getBoundingClientRect().height;
+      const boundsChanged = headerHeight !== lastHeaderHeight || footerHeight !== lastFooterHeight;
+      if (boundsChanged) {
+        lastHeaderHeight = headerHeight;
+        lastFooterHeight = footerHeight;
+        document.documentElement.style.setProperty("--pte-calendar-header-height", `${headerHeight}px`);
+        document.documentElement.style.setProperty("--pte-calendar-footer-height", `${footerHeight}px`);
+      }
+      const { width, height } = content.getBoundingClientRect();
+      if (boundsChanged || width !== lastContentWidth || height !== lastContentHeight) {
+        lastContentWidth = width;
+        lastContentHeight = height;
+        scheduleCalendarFit();
+      }
+    }
+
+    updateBounds();
+    window.addEventListener("resize", updateBounds);
+
+    if (typeof ResizeObserver === "function") {
+      let boundsFrame = null;
+      const observer = new ResizeObserver(() => {
+        if (boundsFrame !== null) return;
+        // A mért elemeket a következő képkockában módosítjuk, hogy ne
+        // hozzunk létre ResizeObserver-visszacsatolást ugyanabban a körben.
+        boundsFrame = requestAnimationFrame(() => {
+          boundsFrame = null;
+          updateBounds();
+        });
+      });
+      observer.observe(header);
+      observer.observe(footer);
+      // Sidebar nyitás/csukás után a naptár szélességét is újramérjük.
+      observer.observe(content);
+    } else {
+      content.addEventListener("transitionend", updateBounds);
+    }
+
+    return content;
+  }
+
+  const pageContent = installPageLayout();
+
   // Lapozáskor az új DOM is ugyanazokat a már kiszámolt méreteket kapja.
   // Ehhez nincs szükség új mérésre vagy újraméretezési időzítőre.
   const timeGridStyle = document.createElement("style");
@@ -1610,9 +1722,13 @@
 
     const calendarRect = calendarElement.getBoundingClientRect();
 
-    const calendarTop = Math.max(0, calendarRect.top);
+    // A középső terület görgetése ne növelje meg a naptárat a következő
+    // átméretezéskor: a görgetés előtti pozícióból számolunk.
+    const calendarTop = Math.max(0, calendarRect.top + (pageContent?.scrollTop || 0));
 
-    let bottomLimit = window.innerHeight - CONFIG.bottomGap;
+    let bottomLimit = (pageContent
+      ? pageContent.getBoundingClientRect().bottom
+      : window.innerHeight) - CONFIG.bottomGap;
 
     // --------------------------------------------------------
     // Footer
@@ -1767,11 +1883,13 @@ MŰVELETEK
   ID másolása
 
 DINAMIKUS LAYOUT
+  fix fejléc és lábléc
+  rejtett content-header
   kitölti az elérhető magasságot
   0–24 órás rács dinamikus
   kis ablaknál belső scroll
   egyszeri kezdeti méretezés
-  utána csak window resize / zoom
+  méretezés ablak- és sidebar-változáskor
   változásellenőrzés percenként és műveletek után`,
     "color:#00a000;font-weight:bold;font-size:14px",
   );
