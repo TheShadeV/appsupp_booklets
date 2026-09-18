@@ -38,9 +38,6 @@
 
     bottomGap: 8,
 
-    // Teljes FullCalendar minimum magassága
-    minCalendarHeight: 380,
-
     // Minimum félórás sormagasság.
     // Ha ennél kisebb lenne, inkább belső scroll lesz.
     minHalfHourRowHeight: 18,
@@ -1714,9 +1711,31 @@
     // átméretezéskor: a görgetés előtti pozícióból számolunk.
     const calendarTop = Math.max(0, calendarRect.top + (pageContent?.scrollTop || 0));
 
-    let bottomLimit = (pageContent
-      ? pageContent.getBoundingClientRect().bottom
-      : window.innerHeight) - CONFIG.bottomGap;
+    let bottomLimit = window.innerHeight - CONFIG.bottomGap;
+
+    if (pageContent) {
+      // A naptár alatti margók, paddingek és keretek is helyet foglalnak.
+      // Ezek nélkül a naptár ugyan elférne, de a .content/.box burkolata
+      // már kilógna, és megjelenne egy második, külső görgetősáv.
+      const pixels = (value) => parseFloat(value) || 0;
+      const contentStyle = window.getComputedStyle(pageContent);
+      let bottomSpace = CONFIG.bottomGap + pixels(contentStyle.paddingBottom);
+
+      for (let element = calendarElement; element && element !== pageContent; element = element.parentElement) {
+        const style = window.getComputedStyle(element);
+        bottomSpace += pixels(style.marginBottom) +
+          pixels(style.paddingBottom) + pixels(style.borderBottomWidth);
+
+        if (element === calendarElement) {
+          // A FullCalendar height opciója a saját belső tartalmát méretezi.
+          bottomSpace += pixels(style.paddingTop) + pixels(style.borderTopWidth);
+        }
+      }
+
+      const contentRect = pageContent.getBoundingClientRect();
+      bottomLimit = contentRect.top + pageContent.clientTop +
+        pageContent.clientHeight - bottomSpace;
+    }
 
     // --------------------------------------------------------
     // Footer
@@ -1745,7 +1764,9 @@
 
     let availableHeight = Math.floor(bottomLimit - calendarTop);
 
-    availableHeight = Math.max(CONFIG.minCalendarHeight, availableHeight);
+    // Kis ablakban sem kényszerítünk a rendelkezésre állónál nagyobb
+    // külső magasságot; az időrács a saját görgetőjét használja.
+    availableHeight = Math.max(1, availableHeight);
 
     const heightChanged = availableHeight !== lastCalendarHeight;
 
