@@ -32,6 +32,8 @@
     verifyDelayMs: 300,
 
     refreshIntervalMs: 60_000,
+    refreshTimeoutMs: 30_000,
+    calendarIndexUrl: "/calendar/index",
 
     bottomGap: 8,
 
@@ -85,7 +87,10 @@
   let isCalendarLayouting = false;
 
   let pendingEventSaves = 0;
-  let isCalendarFetching = false;
+  let eventMutationVersion = 0;
+  let pendingEventRefresh = false;
+  let eventRefreshInFlight = false;
+  let eventRefreshFlushTimer = null;
 
   let resizeTimer = null;
   let pendingCalendarFit = false;
@@ -512,7 +517,7 @@
 
     const oldEnd = event.end ? event.end.clone() : null;
 
-    pendingEventSaves++;
+    beginCalendarAction();
 
     try {
       event.start = event.start.clone().add(amount, unit);
@@ -539,7 +544,7 @@
 
       toast("Mentési hiba.\n\n" + error.message, "error", 7000);
     } finally {
-      pendingEventSaves--;
+      finishCalendarAction();
     }
   }
 
@@ -598,7 +603,7 @@
 
     const durationMs = event.end ? event.end.diff(event.start) : null;
 
-    pendingEventSaves++;
+    beginCalendarAction();
 
     try {
       event.start = newStart;
@@ -625,7 +630,7 @@
 
       toast("Mentési hiba.\n\n" + error.message, "error", 7000);
     } finally {
-      pendingEventSaves--;
+      finishCalendarAction();
     }
   }
 
@@ -655,6 +660,8 @@
     const url = getTestUrl(id);
 
     toast("Teszt levél küldése...", "loading", 15000);
+
+    beginCalendarAction();
 
     try {
       const response = await fetch(url, {
@@ -702,6 +709,8 @@
         "error",
         7000,
       );
+    } finally {
+      finishCalendarAction();
     }
   }
 
@@ -787,6 +796,8 @@
     menu.style.display = "none";
 
     selectedEvent = null;
+
+    if (pendingEventRefresh) scheduleEventRefresh();
   }
 
   function addSeparator() {
@@ -842,6 +853,8 @@
         console.error("[PTE] Menü művelet hiba:", error);
 
         toast(error.message, "error", 5000);
+      } finally {
+        requestCalendarRefresh();
       }
     });
 
@@ -1029,6 +1042,88 @@
   window.addEventListener("scroll", hideMenu, true);
 
   // ============================================================
+  // A szerveroldali Yii-widget JSON eseményeit olvassuk ki. A letöltött
+  // oldal JavaScript-kódját soha nem futtatjuk le.
+  function extractCalendarEvents(html) {
+    const marker = /"events"\s*:/.exec(html);
+
+    if (!marker) {
+      throw new Error("Nem található az events tömb.");
+    }
+
+    const valueStart = marker.index + marker[0].length;
+    const arrayStart = valueStart + html.slice(valueStart).search(/\S/);
+
+    if (html[arrayStart] !== "[") {
+      throw new Error("Nem található az events tömb kezdete.");
+    }
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = arrayStart; i < html.length; i++) {
+      const char = html[i];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === '"') {
+        inString = true;
+      } else if (char === "[") {
+        depth++;
+      } else if (char === "]" && --depth === 0) {
+        const events = JSON.parse(html.slice(arrayStart, i + 1));
+
+        if (
+          events.some(
+            (event) =>
+              !event ||
+              typeof event !== "object" ||
+              Array.isArray(event) ||
+              !(
+                (typeof event.start === "string" && event.start.trim()) ||
+                (typeof event.start === "number" &&
+                  Number.isFinite(event.start))
+              ),
+          )
+        ) {
+          throw new Error(
+            "Érvénytelen esemény érkezett a naptár frissítésekor.",
+          );
+        }
+
+        return events;
+      }
+    }
+
+    throw new Error("Az events tömb vége nem található.");
+  }
+
+  async function fetchCalendarEvents(signal) {
+    const response = await fetch(CONFIG.calendarIndexUrl, {
+      method: "GET",
+      credentials: "include",
+      cache: "no-store",
+      signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Naptár lekérése sikertelen: ${response.status}`);
+    }
+
+    return extractCalendarEvents(await response.text());
+  }
+
+  // ============================================================
   // ESEMÉNYADATOK FRISSÍTÉSE PERCENKÉNT
   // ============================================================
 
@@ -1045,132 +1140,200 @@
     };
   }
 
-  function editableTransform(originalTransform) {
-    return function (event, ...args) {
-      const transformed =
-        typeof originalTransform === "function"
-          ? originalTransform.call(this, event, ...args)
-          : event;
+  let indexEvents = [];
+  let indexSourceInstalled = false;
+  let refreshErrorShown = false;
+  let lastEventsSignature = null;
+  let lastRenderedTimingSignature = null;
 
-      return makeEventEditable(transformed);
-    };
-  }
-
-  const originalLoading = $calendar.fullCalendar("option", "loading");
-
-  $calendar.fullCalendar("option", "loading", function (loading, ...args) {
-    isCalendarFetching = loading;
-
-    if (typeof originalLoading === "function") {
-      return originalLoading.call(this, loading, ...args);
+  // A JSON objektumkulcsok és az események sorrendje nem adatváltozás.
+  // A mezőkön belüli tömbök sorrendjét viszont megőrizzük.
+  function stableJson(value) {
+    if (Array.isArray(value)) {
+      return "[" + value.map(stableJson).join(",") + "]";
     }
-  });
-
-  $calendar.fullCalendar(
-    "option",
-    "eventDataTransform",
-    editableTransform($calendar.fullCalendar("option", "eventDataTransform")),
-  );
-
-  const sourceTransforms = new WeakMap();
-  let warnedAboutStaticSources = false;
-
-  function prepareEventSources() {
-    const sources = $calendar.fullCalendar("getEventSources");
-
-    if (!Array.isArray(sources)) {
-      throw new Error("A naptár eseményforrásai nem kérdezhetők le.");
-    }
-
-    let refreshableSources = 0;
-
-    for (const source of sources) {
-      // A forrásszintű transzformáció a globális után fut; az eredeti
-      // átalakítást megtartva itt is megőrizzük a szerkeszthetőséget.
-      if (source && typeof source === "object") {
-        const originalTransform = source.eventDataTransform;
-
-        if (
-          typeof originalTransform === "function" &&
-          sourceTransforms.get(source) !== originalTransform
-        ) {
-          const transform = editableTransform(originalTransform);
-          source.eventDataTransform = transform;
-          sourceTransforms.set(source, transform);
-        }
-      }
-
-      // FullCalendar 3 belső forrásai getPrimitive()-vel adják vissza
-      // az eredeti URL-t, függvényt vagy statikus eseménytömböt.
-      const primitive =
-        typeof source?.getPrimitive === "function"
-          ? source.getPrimitive()
-          : source;
-
-      if (
-        typeof primitive === "string" ||
-        typeof primitive === "function" ||
-        typeof source?.url === "string" ||
-        typeof source?.events === "function" ||
-        source?.googleCalendarId
-      ) {
-        refreshableSources++;
-      }
-    }
-
-    if (
-      (!sources.length || refreshableSources < sources.length) &&
-      !warnedAboutStaticSources
-    ) {
-      warnedAboutStaticSources = true;
-      console.warn(
-        "[PTE] A naptár statikus vagy hiányzó eseményforrást tartalmaz. " +
-          "Ezekből nem kérhetők le friss szerveradatok; ehhez URL vagy " +
-          "adatlekérő függvény szükséges az oldalon.",
+    if (value !== null && typeof value === "object") {
+      return (
+        "{" +
+        Object.keys(value)
+          .sort()
+          .map((key) => JSON.stringify(key) + ":" + stableJson(value[key]))
+          .join(",") +
+        "}"
       );
     }
-
-    return refreshableSources > 0;
+    return JSON.stringify(value);
   }
 
-  function refreshCalendarEvents() {
-    if ($calendar[0]?.isConnected === false) {
-      clearInterval(eventRefreshTimer);
-      return;
-    }
+  function eventsSignature(events) {
+    return JSON.stringify(events.map(stableJson).sort());
+  }
 
-    // A nyitott menü is egy konkrét eseménypéldányra hivatkozik.
-    if (
+  function renderedTimingSignature() {
+    // A helyben elmozgatott időpontot akkor is helyre kell állítani,
+    // ha a szerver az előző lekéréssel azonos adatot ad vissza.
+    return eventsSignature(
+      $calendar.fullCalendar("clientEvents").map((event) => ({
+        id: event.id ?? null,
+        start: event.start?.format?.() ?? event.start ?? null,
+        end: event.end?.format?.() ?? event.end ?? null,
+        allDay: event.allDay ?? false,
+      })),
+    );
+  }
+
+  // A friss HTML az összes levelet tartalmazza. A naptár nézetváltáskor is
+  // ebből a pillanatképből dolgozik, nem az induláskori statikus tömbből.
+  const indexEventSource = {
+    id: "__pte_calendar_index",
+    events(start, end, timezone, callback) {
+      callback(indexEvents.map(makeEventEditable));
+    },
+    eventDataTransform: makeEventEditable,
+  };
+
+  function beginCalendarAction() {
+    pendingEventSaves++;
+    eventMutationVersion++;
+  }
+
+  function finishCalendarAction() {
+    pendingEventSaves--;
+    requestCalendarRefresh();
+  }
+
+  function calendarRefreshBlocked() {
+    return (
       isCalendarDragging ||
       isCalendarLayouting ||
       pendingEventSaves > 0 ||
-      isCalendarFetching ||
-      selectedEvent
-    ) {
+      Boolean(selectedEvent)
+    );
+  }
+
+  function requestCalendarRefresh() {
+    pendingEventRefresh = true;
+    scheduleEventRefresh();
+  }
+
+  function scheduleEventRefresh() {
+    if (eventRefreshFlushTimer !== null) return;
+
+    eventRefreshFlushTimer = setTimeout(() => {
+      eventRefreshFlushTimer = null;
+      void flushCalendarRefresh();
+    }, 0);
+  }
+
+  function applyCalendarEvents(events) {
+    // A felhasználó lekérés közben is lapozhat: a válasz alkalmazásakor
+    // aktuális nézetet és görgetést őrizzük meg, nem egy korábbi állapotot.
+    const scroller = $calendar[0].querySelector(".fc-time-grid-container");
+    const scrollTop = scroller?.scrollTop;
+    const scrollLeft = scroller?.scrollLeft;
+    const view = $calendar.fullCalendar("getView");
+    const date = $calendar.fullCalendar("getDate").valueOf();
+
+    indexEvents = events;
+
+    if (!indexSourceInstalled) {
+      $calendar.fullCalendar("removeEventSources");
+      $calendar.fullCalendar("addEventSource", indexEventSource);
+      indexSourceInstalled = true;
+    } else {
+      $calendar.fullCalendar("refetchEventSources", [indexEventSource.id]);
+    }
+
+    const restoreScroll = () => {
+      if (
+        scroller?.isConnected &&
+        $calendar.fullCalendar("getView") === view &&
+        $calendar.fullCalendar("getDate").valueOf() === date
+      ) {
+        scroller.scrollTop = scrollTop;
+        scroller.scrollLeft = scrollLeft;
+      }
+    };
+    restoreScroll();
+    requestAnimationFrame(restoreScroll);
+  }
+
+  async function flushCalendarRefresh() {
+    if ($calendar[0]?.isConnected === false) {
+      clearInterval(eventRefreshTimer);
+      pendingEventRefresh = false;
       return;
     }
 
+    if (
+      !pendingEventRefresh ||
+      eventRefreshInFlight ||
+      calendarRefreshBlocked()
+    )
+      return;
+
+    pendingEventRefresh = false;
+    eventRefreshInFlight = true;
+    const version = eventMutationVersion;
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      CONFIG.refreshTimeoutMs,
+    );
+
     try {
-      if (prepareEventSources()) {
-        // Adatlekérés és eseményrajzolás; nem indít saját méretezést.
-        $calendar.fullCalendar("refetchEvents");
+      const events = await fetchCalendarEvents(controller.signal);
+
+      if ($calendar[0]?.isConnected === false) return;
+
+      if (version !== eventMutationVersion || calendarRefreshBlocked()) {
+        // Mentés/mozgatás indult azóta: a régi válasz nem írhatja felül.
+        pendingEventRefresh = true;
+        return;
       }
+
+      const signature = eventsSignature(events);
+      if (
+        signature !== lastEventsSignature ||
+        renderedTimingSignature() !== lastRenderedTimingSignature
+      ) {
+        applyCalendarEvents(events);
+        lastEventsSignature = signature;
+        lastRenderedTimingSignature = renderedTimingSignature();
+        console.log(
+          `[PTE] Naptár frissítve az indexoldalról: ${events.length} esemény`,
+        );
+      }
+      refreshErrorShown = false;
     } catch (error) {
       console.error("[PTE] A naptáresemények frissítése sikertelen:", error);
+      if (!refreshErrorShown) {
+        refreshErrorShown = true;
+        toast(
+          "A naptár frissítése sikertelen; az eddigi események láthatók.\n" +
+            error.message,
+          "error",
+          7000,
+        );
+      }
+    } finally {
+      clearTimeout(timeout);
+      eventRefreshInFlight = false;
+      if (pendingEventRefresh && !calendarRefreshBlocked())
+        scheduleEventRefresh();
     }
   }
 
-  // Már a következő kézi navigáláskor is az új eseményekre érvényes.
-  try {
-    prepareEventSources();
-  } catch (error) {
-    console.warn("[PTE] Az eseményforrások ellenőrzése sikertelen:", error);
-  }
-
   const eventRefreshTimer = setInterval(
-    refreshCalendarEvents,
+    requestCalendarRefresh,
     CONFIG.refreshIntervalMs,
   );
+
+  // A külön lapon megnyitott szerkesztőből visszatérve is friss adat kell.
+  window.addEventListener("focus", requestCalendarRefresh);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") requestCalendarRefresh();
+  });
 
   // ============================================================
   // FULLCALENDAR ALAPBEÁLLÍTÁSOK
@@ -1194,6 +1357,7 @@
 
     function () {
       isCalendarDragging = true;
+      eventMutationVersion++;
 
       clearTimeout(resizeTimer);
 
@@ -1216,6 +1380,9 @@
       if (pendingCalendarFit) {
         scheduleCalendarFit();
       }
+
+      // A drop/mentés ugyanebben a körben még elindulhat, ezért sorba állítjuk.
+      requestCalendarRefresh();
     },
   );
 
@@ -1232,7 +1399,7 @@
 
       toast(`Mentés...\n${newTime}`, "loading", 10000);
 
-      pendingEventSaves++;
+      beginCalendarAction();
 
       try {
         const result = await saveEvent(event);
@@ -1254,7 +1421,7 @@
           7000,
         );
       } finally {
-        pendingEventSaves--;
+        finishCalendarAction();
       }
     },
   );
@@ -1419,6 +1586,8 @@
         if (pendingCalendarFit && !isCalendarDragging) {
           scheduleCalendarFit();
         }
+
+        if (pendingEventRefresh) scheduleEventRefresh();
       });
     }
   }
@@ -1560,6 +1729,8 @@
 
   scheduleCalendarFit();
 
+  requestCalendarRefresh();
+
   // ============================================================
   // DIAGNOSZTIKA
   // ============================================================
@@ -1601,7 +1772,7 @@ DINAMIKUS LAYOUT
   kis ablaknál belső scroll
   egyszeri kezdeti méretezés
   utána csak window resize / zoom
-  eseményfrissítés percenként`,
+  változásellenőrzés percenként és műveletek után`,
     "color:#00a000;font-weight:bold;font-size:14px",
   );
 
