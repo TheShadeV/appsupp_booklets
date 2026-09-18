@@ -20,6 +20,7 @@
   // ✓ drag közben teljes layout-freeze
   // ✓ méretezés induláskor és window resize esetén
   // ✓ fix fejléc és lábléc, közöttük görgethető tartalom
+  // ✓ saját színek, böngészőben mentett megjelenés
   // ============================================================
 
   // ============================================================
@@ -997,6 +998,74 @@
   // SHIFT + BAL KLIKK
   // ============================================================
 
+  function getNavigationUrl(value) {
+    if (typeof value !== "string" || !value.trim() || value.trim().startsWith("#")) return null;
+    try {
+      const url = new URL(value, document.baseURI);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+      if (url.hash && url.origin === location.origin &&
+          url.pathname === location.pathname && url.search === location.search) return null;
+      return url;
+    } catch {
+      return null;
+    }
+  }
+
+  function isLogoutLink(link, url) {
+    const route = url.pathname + "/" + (url.searchParams.get("r") || "");
+    const label = [link?.textContent, link?.getAttribute("aria-label"), link?.title].filter(Boolean).join(" ");
+    return /(?:^|\/)(?:log-?out|sign-?out)(?:\/|$)/i.test(route) ||
+      /kijelentkez|\blog\s*out\b|\bsign\s*out\b/i.test(label);
+  }
+
+  function installNewTabLinks() {
+    function prepareLink(link) {
+      const url = getNavigationUrl(link.getAttribute("href"));
+      if (!url) return false;
+      if (isLogoutLink(link, url)) {
+        if (link.target !== "_self") link.target = "_self";
+        return false;
+      }
+      if (link.matches("[data-toggle], [data-bs-toggle], [data-widget], .dropdown-toggle, [role=button]") ||
+          (link.parentElement?.classList.contains("treeview") &&
+           link.parentElement.querySelector(".treeview-menu"))) return false;
+      if (link.target !== "_blank") link.target = "_blank";
+      link.relList.add("noopener");
+      link.setAttribute("data-pjax", "0");
+      return true;
+    }
+    function prepareTree(root) {
+      if (root.nodeType !== 1) return;
+      if (root.matches("a[href]")) prepareLink(root);
+      root.querySelectorAll("a[href]").forEach(prepareLink);
+    }
+    prepareTree(document.body);
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        if (record.type === "attributes") {
+          if (record.target.matches("a[href]")) prepareLink(record.target);
+        } else {
+          record.addedNodes.forEach(prepareTree);
+        }
+      }
+    });
+    observer.observe(document.body, {
+      childList: true, subtree: true, attributes: true, attributeFilter: ["href", "target"],
+    });
+    document.addEventListener("click", (event) => {
+      const link = event.target.closest?.("a[href]");
+      if (!link || !prepareLink(link)) return;
+      // A naptármenüt és a Yii megerősítést / POST-ot az eredeti kezelő
+      // kapja; a Yii a link targetjét is átveszi a létrehozott űrlaphoz.
+      if ((event.shiftKey && link.closest(CONFIG.calendarSelector)) ||
+          link.hasAttribute("data-method") || link.hasAttribute("data-confirm") ||
+          link.hasAttribute("download")) return;
+      // A natív linknyitást meghagyjuk, de a régi click-kezelő nem
+      // irányíthatja át a naptár lapját location.href-fel.
+      event.stopImmediatePropagation();
+    }, true);
+  }
+
   const originalEventClick = $calendar.fullCalendar("option", "eventClick");
 
   $calendar.fullCalendar(
@@ -1010,6 +1079,14 @@
 
         showMenu(event, jsEvent.clientX, jsEvent.clientY);
 
+        return false;
+      }
+
+      const link = jsEvent.target?.closest?.("a[href]");
+      const url = getNavigationUrl(event.url || link?.getAttribute("href"));
+      if (url && !isLogoutLink(link, url)) {
+        jsEvent.preventDefault();
+        window.open(url.href, "_blank", "noopener");
         return false;
       }
 
@@ -1441,6 +1518,424 @@
   $calendar.fullCalendar("rerenderEvents");
 
   // ============================================================
+  // MEGJELENÉS BEÁLLÍTÁSAI
+  // ============================================================
+
+  function installAppearanceSettings() {
+    const storageKey = "pte.calendar.appearance.v1";
+    const header = document.querySelector(".main-header");
+    const content = $calendar[0].closest(".content-wrapper");
+    const footer = document.querySelector(".main-footer");
+    const navbar = header?.querySelector(".navbar");
+    const calendar = $calendar[0];
+    const fields = [
+      ["navbarBackground", "Fejléc háttere"],
+      ["navbarText", "Fejléc szövege és ikonjai"],
+      ["pageBackground", "Oldal háttere"],
+      ["calendarBackground", "Naptár háttere"],
+      ["text", "Tartalom szövege"],
+      ["calendarTitle", "Naptár címe és napfejlécei"],
+      ["eventText", "Naptáresemények szövege"],
+      ["eventSending", "Kiküldés alatt (eredetileg zöld)"],
+      ["eventArmed", "Élesített (eredetileg piros)"],
+      ["eventOther", "Egyéb esemény (eredetileg kék)"],
+      ["grid", "Naptárrács fővonalai és keretek"],
+      ["gridMinor", "Naptárrács köztes vonalai"],
+      ["today", "Mai nap kiemelése"],
+      ["accent", "Naptárgombok"],
+      ["footerBackground", "Lábléc háttere"],
+      ["footerText", "Lábléc szövege"],
+    ];
+
+    function readColor(element, property, fallback) {
+      if (!element) return fallback;
+      const value = window.getComputedStyle(element)[property];
+      const match = value.match(/^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/);
+      if (!match || (match[4] !== undefined && Number(match[4]) < 1)) return fallback;
+      return "#" + match.slice(1, 4).map((part) => Number(part).toString(16).padStart(2, "0")).join("");
+    }
+
+    const defaults = {
+      navbarBackground: readColor(navbar, "backgroundColor", "#3c8dbc"),
+      navbarText: readColor(navbar?.querySelector(".navbar-nav > li > a"), "color", "#ffffff"),
+      pageBackground: readColor(content, "backgroundColor", "#ecf0f5"),
+      calendarBackground: readColor(calendar.querySelector(".fc-view-container"), "backgroundColor", "#ffffff"),
+      text: readColor(calendar, "color", "#333333"),
+      calendarTitle: readColor(calendar.querySelector(".fc-toolbar h2"), "color", "#333333"),
+      eventText: readColor(calendar.querySelector(".fc-event"), "color", "#ffffff"),
+      eventSending: "#00a65a",
+      eventArmed: "#dd4b39",
+      eventOther: "#3c8dbc",
+      grid: readColor(calendar.querySelector("td"), "borderBottomColor", "#dddddd"),
+      gridMinor: readColor(calendar.querySelector(".fc-slats .fc-minor td"), "borderBottomColor", "#e8edf2"),
+      today: readColor(calendar.querySelector(".fc-today"), "backgroundColor", "#fcf8e3"),
+      accent: readColor(calendar.querySelector(".fc-button"), "backgroundColor", "#e6e6e6"),
+      footerBackground: readColor(footer, "backgroundColor", "#ffffff"),
+      footerText: readColor(footer, "color", "#444444"),
+    };
+    const presets = {
+      light: {
+        navbarBackground: "#3c8dbc", navbarText: "#ffffff",
+        pageBackground: "#ecf0f5", calendarBackground: "#ffffff",
+        text: "#263445", grid: "#d5dce5", today: "#e8f3ff",
+        calendarTitle: "#263445", eventText: "#ffffff", gridMinor: "#e8edf2",
+        eventSending: "#218838", eventArmed: "#b52b27", eventOther: "#287db0",
+        accent: "#287db0", footerBackground: "#ffffff", footerText: "#444444",
+      },
+      dark: {
+        navbarBackground: "#172234", navbarText: "#f1f5f9",
+        pageBackground: "#111827", calendarBackground: "#1f2937",
+        text: "#e5e7eb", grid: "#475569", today: "#293f5b",
+        calendarTitle: "#f1f5f9", eventText: "#ffffff", gridMinor: "#334155",
+        eventSending: "#247a4b", eventArmed: "#a73535", eventOther: "#285f99",
+        accent: "#60a5fa", footerBackground: "#172234", footerText: "#e5e7eb",
+      },
+    };
+    const themeStyle = document.createElement("style");
+    themeStyle.id = "__pte_calendar_colors";
+    document.head.appendChild(themeStyle);
+
+    // A szerver eredeti színjelölését az eseményadatok átírása nélkül
+    // azonosítjuk. A saját paletta így nem válik a következő frissítés
+    // vagy újrarajzolás státusz-felismerésének alapjává.
+    const colorProbe = document.createElement("span");
+    colorProbe.hidden = true;
+    document.body.appendChild(colorProbe);
+    const statusColors = new Map();
+    function statusFromColor(value) {
+      if (typeof value !== "string" || !value.trim()) return null;
+      if (statusColors.has(value)) return statusColors.get(value);
+      colorProbe.style.color = "";
+      colorProbe.style.color = value;
+      const hex = colorProbe.style.color ? readColor(colorProbe, "color", null) : null;
+      let status = null;
+      if (hex) {
+        const [red, green, blue] = hex.slice(1).match(/../g).map((part) => parseInt(part, 16) / 255);
+        const max = Math.max(red, green, blue);
+        const delta = max - Math.min(red, green, blue);
+        if (delta > 0.1) {
+          let hue = max === red ? (green - blue) / delta :
+            max === green ? (blue - red) / delta + 2 : (red - green) / delta + 4;
+          hue = (hue * 60 + 360) % 360;
+          if (hue < 20 || hue >= 345) status = "armed";
+          else if (hue >= 70 && hue < 170) status = "sending";
+          else if (hue >= 170 && hue < 260) status = "other";
+        }
+      }
+      statusColors.set(value, status);
+      return status;
+    }
+
+    const originalEventRender = $calendar.fullCalendar("option", "eventRender");
+    $calendar.fullCalendar("option", "eventRender", function (event, element, ...args) {
+      const result = typeof originalEventRender === "function"
+        ? originalEventRender.call(this, event, element, ...args) : undefined;
+      if (result === false) return false;
+      const rendered = result && result !== true ? jq(result) : element;
+      const originalColor = rendered[0]?.style.backgroundColor ||
+        event.backgroundColor || event.color ||
+        event.source?.backgroundColor || event.source?.color ||
+        $calendar.fullCalendar("option", "eventBackgroundColor") ||
+        $calendar.fullCalendar("option", "eventColor") || "#3a87ad";
+      const status = statusFromColor(originalColor);
+      rendered.removeAttr("data-pte-calendar-status");
+      if (status) rendered.attr("data-pte-calendar-status", status);
+      return result;
+    });
+
+    const footerStyle = document.createElement("style");
+    footerStyle.textContent = `
+      html[data-pte-calendar-footer-hidden] .main-footer { display: none !important; }
+    `;
+    document.head.appendChild(footerStyle);
+    function applyFooterVisibility(visible) {
+      document.documentElement.toggleAttribute("data-pte-calendar-footer-hidden", !visible);
+      // Azonnal átadjuk a felszabaduló helyet, ResizeObserver nélkül is.
+      document.documentElement.style.setProperty(
+        "--pte-calendar-footer-height", `${footer?.getBoundingClientRect().height || 0}px`,
+      );
+      scheduleCalendarFit();
+    }
+
+    function normalizeColors(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+      const colors = {};
+      for (const [key] of fields) {
+        // A korábban mentett palettákhoz az új mezőket alapértékkel pótoljuk.
+        const color = value[key] ?? defaults[key];
+        if (typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color)) return null;
+        colors[key] = color.toLowerCase();
+      }
+      return colors;
+    }
+
+    function applyColors(colors) {
+      if (!colors) {
+        themeStyle.textContent = "";
+        document.documentElement.removeAttribute("data-pte-calendar-colors");
+        return;
+      }
+      const rgb = colors.accent.slice(1).match(/../g).map((part) => parseInt(part, 16));
+      const buttonText = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000 > 150
+        ? "#111827" : "#ffffff";
+      const scope = "html[data-pte-calendar-colors]";
+      themeStyle.textContent = `
+        ${scope} .main-header .navbar,
+        ${scope} .main-header .logo,
+        ${scope} .main-header .logo:hover {
+          background-color: ${colors.navbarBackground} !important;
+          color: ${colors.navbarText} !important;
+        }
+        ${scope} .main-header .navbar .sidebar-toggle,
+        ${scope} .main-header .navbar-nav > li > a {
+          color: ${colors.navbarText} !important;
+        }
+        ${scope} .main-header .navbar .sidebar-toggle:hover,
+        ${scope} .main-header .navbar-nav > li > a:hover,
+        ${scope} .main-header .navbar-nav > li > a:focus,
+        ${scope} .main-header .navbar-nav > .open > a {
+          background-color: ${colors.navbarBackground} !important;
+          box-shadow: inset 0 0 0 100px rgba(0, 0, 0, .12);
+        }
+        ${scope} .content-wrapper {
+          background-color: ${colors.pageBackground} !important;
+          color: ${colors.text} !important;
+        }
+        ${scope} .content-wrapper .box,
+        ${scope} ${CONFIG.calendarSelector},
+        ${scope} ${CONFIG.calendarSelector} .fc-view-container,
+        ${scope} ${CONFIG.calendarSelector} .fc-list-view,
+        ${scope} ${CONFIG.calendarSelector} .fc-popover {
+          background-color: ${colors.calendarBackground} !important;
+          color: ${colors.text} !important;
+        }
+        ${scope} ${CONFIG.calendarSelector} th,
+        ${scope} ${CONFIG.calendarSelector} td,
+        ${scope} ${CONFIG.calendarSelector} .fc-divider,
+        ${scope} ${CONFIG.calendarSelector} .fc-list-view,
+        ${scope} ${CONFIG.calendarSelector} .fc-popover,
+        ${scope} .content-wrapper .box {
+          border-color: ${colors.grid} !important;
+        }
+        ${scope} ${CONFIG.calendarSelector} .fc-today,
+        ${scope} ${CONFIG.calendarSelector} .fc-list-heading td,
+        ${scope} ${CONFIG.calendarSelector} .fc-popover .fc-header {
+          background-color: ${colors.today} !important;
+          color: ${colors.text} !important;
+        }
+        ${scope} ${CONFIG.calendarSelector} .fc-toolbar h2,
+        ${scope} ${CONFIG.calendarSelector} .fc-day-header,
+        ${scope} ${CONFIG.calendarSelector} .fc-day-header a,
+        ${scope} ${CONFIG.calendarSelector} .fc-day-number,
+        ${scope} ${CONFIG.calendarSelector} .fc-list-heading a {
+          color: ${colors.calendarTitle} !important;
+        }
+        ${scope} ${CONFIG.calendarSelector} .fc-event,
+        ${scope} ${CONFIG.calendarSelector} .fc-event .fc-title,
+        ${scope} ${CONFIG.calendarSelector} .fc-event .fc-time,
+        ${scope} ${CONFIG.calendarSelector} .fc-list-item,
+        ${scope} ${CONFIG.calendarSelector} .fc-list-item a {
+          color: ${colors.eventText} !important;
+        }
+        ${scope} ${CONFIG.calendarSelector} .fc-slats .fc-minor td {
+          border-color: ${colors.gridMinor} !important;
+        }
+        ${scope} ${CONFIG.calendarSelector} [data-pte-calendar-status="sending"] {
+          --pte-event-color: ${colors.eventSending};
+        }
+        ${scope} ${CONFIG.calendarSelector} [data-pte-calendar-status="armed"] {
+          --pte-event-color: ${colors.eventArmed};
+        }
+        ${scope} ${CONFIG.calendarSelector} [data-pte-calendar-status="other"] {
+          --pte-event-color: ${colors.eventOther};
+        }
+        ${scope} ${CONFIG.calendarSelector} .fc-event[data-pte-calendar-status],
+        ${scope} ${CONFIG.calendarSelector} .fc-bg-event[data-pte-calendar-status],
+        ${scope} ${CONFIG.calendarSelector} .fc-list-item[data-pte-calendar-status] td,
+        ${scope} ${CONFIG.calendarSelector} [data-pte-calendar-status] .fc-event-dot {
+          background-color: var(--pte-event-color) !important;
+          border-color: var(--pte-event-color) !important;
+        }
+        ${scope} ${CONFIG.calendarSelector} .fc-button {
+          background: ${colors.accent} !important;
+          border-color: ${colors.accent} !important;
+          color: ${buttonText} !important;
+          text-shadow: none;
+        }
+        ${scope} ${CONFIG.calendarSelector} .fc-state-active {
+          box-shadow: inset 0 0 0 2px ${buttonText};
+        }
+        ${scope} .main-footer,
+        ${scope} .main-footer a {
+          background-color: ${colors.footerBackground} !important;
+          color: ${colors.footerText} !important;
+        }
+      `;
+      document.documentElement.setAttribute("data-pte-calendar-colors", "true");
+    }
+
+    let savedColors = null;
+    let savedShowFooter = true;
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
+      if (saved?.version === 1 || saved?.version === 2) {
+        savedColors = normalizeColors(saved.colors);
+        if (typeof saved.showFooter === "boolean") savedShowFooter = saved.showFooter;
+      }
+    } catch (error) {
+      console.warn("[PTE] A mentett színek nem tölthetők be:", error);
+    }
+    applyColors(savedColors);
+    applyFooterVisibility(savedShowFooter);
+    $calendar.fullCalendar("rerenderEvents");
+
+    const navList = header?.querySelector(".navbar-custom-menu .navbar-nav, .navbar-right.navbar-nav") ||
+      navbar?.querySelector(".navbar-nav");
+    if (!navList) {
+      console.warn("[PTE] A színbeállítások gombjához nem található a navbar menüje.");
+      return;
+    }
+    const userItem = Array.from(navList.children).find((item) =>
+      item.matches(".user-menu") || item.querySelector(".user-image")
+    ) || navList.lastElementChild;
+    const navItem = document.createElement("li");
+    const trigger = document.createElement("a");
+    trigger.href = "#";
+    trigger.title = "Megjelenés beállítása";
+    trigger.setAttribute("role", "button");
+    trigger.setAttribute("aria-label", "Megjelenés beállítása");
+    trigger.setAttribute("aria-haspopup", "dialog");
+    trigger.setAttribute("aria-controls", "__pte_calendar_appearance");
+    trigger.innerHTML = '<span aria-hidden="true" style="display:block;font-size:22px;line-height:20px">&#9881;</span>';
+    navItem.appendChild(trigger);
+    navList.insertBefore(navItem, userItem);
+
+    const dialogStyle = document.createElement("style");
+    dialogStyle.textContent = `
+      #__pte_calendar_appearance {
+        width: 520px; max-width: calc(100vw - 32px);
+        max-height: calc(100dvh - 32px); overflow: auto;
+        box-sizing: border-box; padding: 24px; margin: auto;
+        border: 1px solid #d5dce5; border-radius: 12px;
+        color: #263445; background: #fff; font: 14px/1.5 Arial, sans-serif;
+        box-shadow: 0 16px 60px rgba(0,0,0,.3);
+      }
+      #__pte_calendar_appearance::backdrop { background: rgba(15,23,42,.55); }
+      #__pte_calendar_appearance h2 { margin: 0 0 8px; font-size: 22px; color: #172234; }
+      #__pte_calendar_appearance p { margin: 0 0 16px; }
+      #__pte_calendar_appearance .pte-presets,
+      #__pte_calendar_appearance .pte-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+      #__pte_calendar_appearance .pte-presets { margin-bottom: 16px; }
+      #__pte_calendar_appearance .pte-actions { justify-content: flex-end; margin-top: 20px; }
+      #__pte_calendar_appearance label {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 16px; margin: 0; padding: 8px 0; font-weight: normal;
+        border-bottom: 1px solid #edf0f4;
+      }
+      #__pte_calendar_appearance input[type=color] {
+        width: 54px; height: 32px; flex-shrink: 0; padding: 2px;
+        border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; cursor: pointer;
+      }
+      #__pte_calendar_appearance input[type=checkbox] {
+        width: 18px; height: 18px; margin: 0; accent-color: #1769aa; cursor: pointer;
+      }
+      #__pte_calendar_appearance button {
+        padding: 8px 14px; border: 1px solid #cbd5e1; border-radius: 6px;
+        background: #f8fafc; color: #263445; font: inherit; cursor: pointer;
+      }
+      #__pte_calendar_appearance button[type=submit] { background: #1769aa; color: #fff; border-color: #1769aa; }
+      #__pte_calendar_appearance :focus-visible { outline: 2px solid #1769aa; outline-offset: 3px; }
+      #__pte_calendar_appearance .pte-error { color: #b52b27; margin-top: 12px; }
+    `;
+    document.head.appendChild(dialogStyle);
+    const dialog = document.createElement("dialog");
+    dialog.id = "__pte_calendar_appearance";
+    dialog.setAttribute("aria-labelledby", "__pte_calendar_appearance_title");
+    dialog.innerHTML = `
+      <form>
+        <h2 id="__pte_calendar_appearance_title">Megjelenés</h2>
+        <p>Válaszd ki az oldal színeit. A mentés ebben a böngészőben marad meg.</p>
+        <div class="pte-presets">
+          <button type="button" data-preset="light">Világos</button>
+          <button type="button" data-preset="dark">Sötét</button>
+          <button type="button" data-preset="default">Eredeti színek</button>
+        </div>
+        <div class="pte-color-fields"></div>
+        <label><span>Lábléc megjelenítése</span><input type="checkbox" name="showFooter"></label>
+        <p class="pte-error" role="alert" hidden></p>
+        <div class="pte-actions">
+          <button type="button" data-cancel>Mégse</button>
+          <button type="submit">Mentés</button>
+        </div>
+      </form>
+    `;
+    document.body.appendChild(dialog);
+    const inputs = new Map();
+    const errorMessage = dialog.querySelector(".pte-error");
+    const footerInput = dialog.querySelector('[name="showFooter"]');
+    let useDefaults = false;
+    for (const [key, title] of fields) {
+      const label = document.createElement("label");
+      const caption = document.createElement("span");
+      caption.textContent = title;
+      const input = document.createElement("input");
+      input.type = "color";
+      input.name = key;
+      input.addEventListener("input", () => { useDefaults = false; });
+      label.append(caption, input);
+      dialog.querySelector(".pte-color-fields").appendChild(label);
+      inputs.set(key, input);
+    }
+    function fillForm(colors) {
+      for (const [key, input] of inputs) input.value = colors[key];
+      errorMessage.hidden = true;
+    }
+    function openDialog(event) {
+      event.preventDefault();
+      useDefaults = savedColors === null;
+      fillForm(savedColors || defaults);
+      footerInput.checked = savedShowFooter;
+      if (!dialog.open) dialog.showModal();
+    }
+    trigger.addEventListener("click", openDialog);
+    trigger.addEventListener("keydown", (event) => {
+      if (event.key === " ") openDialog(event);
+    });
+    dialog.querySelector("[data-cancel]").addEventListener("click", () => dialog.close());
+    for (const button of dialog.querySelectorAll("[data-preset]")) {
+      button.addEventListener("click", () => {
+        useDefaults = button.dataset.preset === "default";
+        fillForm(useDefaults ? defaults : presets[button.dataset.preset]);
+        if (useDefaults) footerInput.checked = true;
+      });
+    }
+    dialog.querySelector("form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const colors = normalizeColors(Object.fromEntries(
+        Array.from(inputs, ([key, input]) => [key, input.value])
+      ));
+      if (!colors) return;
+      const nextColors = useDefaults ? null : colors;
+      const showFooter = footerInput.checked;
+      try {
+        if (useDefaults && showFooter) localStorage.removeItem(storageKey);
+        else localStorage.setItem(storageKey, JSON.stringify({ version: 2, colors: nextColors, showFooter }));
+      } catch (error) {
+        errorMessage.textContent = "A böngésző nem engedte a helyi mentést. Engedélyezd az oldal adattárolását, majd próbáld újra.";
+        errorMessage.hidden = false;
+        console.warn("[PTE] A színek mentése sikertelen:", error);
+        return;
+      }
+      savedColors = nextColors;
+      savedShowFooter = showFooter;
+      applyColors(savedColors);
+      applyFooterVisibility(savedShowFooter);
+      dialog.close();
+      toast("Megjelenés elmentve ebben a böngészőben.", "success");
+    });
+  }
+
+  // ============================================================
   // DINAMIKUS LAYOUT
   // ============================================================
 
@@ -1851,6 +2346,9 @@
   // ============================================================
   // ELSŐ MÉRETEZÉS
   // ============================================================
+
+  installAppearanceSettings();
+  installNewTabLinks();
 
   scheduleCalendarFit();
 
